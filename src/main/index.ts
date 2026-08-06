@@ -36,11 +36,11 @@ protocol.registerSchemesAsPrivileged([
   }
 ])
 
+app.setName('corner')
+
 let mainWindow: BrowserWindow | null = null
 let library: LibraryService | null = null
 const baiduService = new BaiduService()
-
-app.setName('corner')
 
 function getLibrary(): LibraryService {
   if (!library) library = new LibraryService(openLibraryDatabase())
