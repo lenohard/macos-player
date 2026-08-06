@@ -11,6 +11,7 @@ import type {
 } from '@shared/ipc'
 import PlayerBar from './PlayerBar'
 import SearchField from './SearchField'
+import TrackDetail from './TrackDetail'
 
 const sourceIcon: Record<LibrarySource['type'], string> = {
   local: '♫',
@@ -53,6 +54,16 @@ function messageFrom(error: unknown, fallback: string): string {
   return error.message.replace(/^Error invoking remote method '[^']+': Error: /, '') || fallback
 }
 
+function pickRandomTracks(source: Track[], count: number): Track[] {
+  if (source.length <= count) return [...source]
+  const indices = Array.from({ length: source.length }, (_, index) => index)
+  for (let index = indices.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(Math.random() * (index + 1))
+    ;[indices[index], indices[swap]] = [indices[swap], indices[index]]
+  }
+  return indices.slice(0, count).map(index => source[index])
+}
+
 function shuffleOrder(length: number, currentIndex: number): number[] {
   const order = Array.from({ length }, (_, index) => index)
   for (let index = order.length - 1; index > 0; index -= 1) {
@@ -82,6 +93,7 @@ type MainView =
   | { kind: 'source'; sourceId: string }
   | { kind: 'playlist'; playlistId: string }
   | { kind: 'queue' }
+  | { kind: 'trackDetail'; trackId: string; returnTo: MainView }
 
 type BaiduPanel = 'browse' | 'index'
 
@@ -101,7 +113,9 @@ export default function App() {
   const [repeatMode, setRepeatMode] = useState<RepeatMode>('off')
   const [playOrder, setPlayOrder] = useState<number[]>([])
   const [temporaryTrack, setTemporaryTrack] = useState<Track | null>(null)
+  const [detailTrack, setDetailTrack] = useState<Track | null>(null)
   const [queueHydrated, setQueueHydrated] = useState(false)
+  const queuePersistenceReady = useRef(false)
   const [isChoosing, setIsChoosing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [baiduStatus, setBaiduStatus] = useState<BaiduAuthStatus | null>(null)
@@ -148,10 +162,18 @@ export default function App() {
     [loadLibraryPage]
   )
 
-  async function loadPlaylistTracks(playlistId: string): Promise<void> {
-    const nextTracks = await window.api.playlistListTracks(playlistId)
-    setPlaylistTracks(nextTracks)
-    replaceQueueAndPlay(nextTracks)
+  async function refreshPlaylistTracks(playlistId: string): Promise<void> {
+    setPlaylistTracks(await window.api.playlistListTracks(playlistId))
+  }
+
+  function playAllFromPlaylist(): void {
+    if (playlistTracks.length === 0) return
+    replaceQueueAndPlay(playlistTracks)
+  }
+
+  function playRandomTwentyFromPlaylist(): void {
+    if (playlistTracks.length === 0) return
+    replaceQueueAndPlay(pickRandomTracks(playlistTracks, 20))
   }
 
   useEffect(() => {
@@ -201,7 +223,7 @@ export default function App() {
   }, [tracks.length, shuffle, currentIndex])
 
   useEffect(() => {
-    if (!queueHydrated) return
+    if (!queueHydrated || tracks.length === 0) return
     const timer = window.setTimeout(() => {
       void window.api.queueSave({ tracks, currentIndex, shuffle, repeatMode, playOrder })
     }, 400)
@@ -238,6 +260,14 @@ export default function App() {
     setPlaylistSearch('')
   }, [activePlaylistId])
 
+  useEffect(() => {
+    if (!activePlaylistId) {
+      setPlaylistTracks([])
+      return
+    }
+    void refreshPlaylistTracks(activePlaylistId)
+  }, [activePlaylistId])
+
   function replaceQueueAndPlay(queue: Track[]): void {
     setTemporaryTrack(null)
     setTracks(queue)
@@ -255,6 +285,15 @@ export default function App() {
 
   function playTemporary(track: Track): void {
     setTemporaryTrack(track)
+  }
+
+  function openTrackDetail(track: Track): void {
+    setDetailTrack(track)
+    setMainView(previous => ({
+      kind: 'trackDetail',
+      trackId: track.id,
+      returnTo: previous.kind === 'trackDetail' ? previous.returnTo : previous
+    }))
   }
 
   function playNext(): void {
@@ -392,7 +431,6 @@ export default function App() {
       await refreshPlaylists()
       await loadLibraryPage(0)
       setMainView({ kind: 'playlist', playlistId: result.playlistId })
-      await loadPlaylistTracks(result.playlistId)
     } catch (reason) {
       setError(messageFrom(reason, '导入百度目录失败'))
     } finally {
@@ -410,7 +448,7 @@ export default function App() {
       setBaiduRoots(await window.api.baiduListRoots())
       await refreshPlaylists()
       await loadLibraryPage(0)
-      if (activePlaylistId) await loadPlaylistTracks(activePlaylistId)
+      if (activePlaylistId) await refreshPlaylistTracks(activePlaylistId)
     } catch (reason) {
       setError(messageFrom(reason, '更新百度目录失败'))
     } finally {
@@ -445,7 +483,6 @@ export default function App() {
       setNewPlaylistName('')
       await refreshPlaylists()
       setMainView({ kind: 'playlist', playlistId: created.id })
-      await loadPlaylistTracks(created.id)
     } catch (reason) {
       setError(messageFrom(reason, '创建歌单失败'))
     }
@@ -474,6 +511,7 @@ export default function App() {
   const isPlaylistView = mainView.kind === 'playlist'
   const currentTrack = temporaryTrack ?? tracks[currentIndex]
   const currentTrackId = currentTrack?.id ?? null
+  const detailReturnView = mainView.kind === 'trackDetail' ? mainView.returnTo : null
 
   return (
     <div className="app-shell">
@@ -533,10 +571,7 @@ export default function App() {
             <button
               key={playlist.id}
               className={`source-button ${activePlaylistId === playlist.id ? 'active' : ''}`}
-              onClick={() => {
-                setMainView({ kind: 'playlist', playlistId: playlist.id })
-                void loadPlaylistTracks(playlist.id)
-              }}
+              onClick={() => setMainView({ kind: 'playlist', playlistId: playlist.id })}
             >
               <span className="source-icon source-local" aria-hidden="true">♫</span>
               <span>{playlist.name}</span>
@@ -554,8 +589,8 @@ export default function App() {
       <main className="main-content">
         <header className="content-header">
           <div>
-            <p className="eyebrow">{mainView.kind === 'queue' ? '播放列表' : isPlaylistView ? '歌单' : '音乐库'}</p>
-            <h1>{mainView.kind === 'queue' ? '当前播放' : isPlaylistView ? activePlaylist?.name ?? '歌单' : activeSource?.name ?? '音乐'}</h1>
+            <p className="eyebrow">{mainView.kind === 'queue' ? '播放列表' : isPlaylistView ? '歌单' : mainView.kind === 'trackDetail' ? '曲目详情' : '音乐库'}</p>
+            <h1>{mainView.kind === 'queue' ? '当前播放' : isPlaylistView ? activePlaylist?.name ?? '歌单' : mainView.kind === 'trackDetail' ? detailTrack?.title ?? '曲目' : activeSource?.name ?? '音乐'}</h1>
           </div>
           {isLocal && (
             <button className="primary-button" onClick={() => void chooseLocalTracks()} disabled={isChoosing}>
@@ -578,6 +613,14 @@ export default function App() {
         )}
 
         <section className="library-content">
+          {detailReturnView && detailTrack && (
+            <TrackDetail
+              track={detailTrack}
+              onBack={() => setMainView(detailReturnView)}
+              onPlay={() => playTemporary(detailTrack)}
+            />
+          )}
+
           {mainView.kind === 'queue' && (
             <div className="library-panel playlist-panel">
               <div className="panel-header-row">
@@ -622,30 +665,53 @@ export default function App() {
 
           {isPlaylistView && (
             <div className="library-panel playlist-panel">
-              <div className="panel-header-row">
+              <div className="panel-header-row playlist-panel-header">
                 <p className="panel-title">
                   {playlistTracks.length} 首
                   {playlistSearch.trim() && visiblePlaylistRows.length !== playlistTracks.length
                     ? ` · 显示 ${visiblePlaylistRows.length}`
                     : ''}
                 </p>
-                <SearchField
-                  value={playlistSearch}
-                  onChange={setPlaylistSearch}
-                  placeholder="搜索歌单内曲目…"
-                  aria-label="搜索歌单"
-                />
+                <div className="playlist-actions">
+                  <button
+                    className="primary-button"
+                    onClick={playAllFromPlaylist}
+                    disabled={playlistTracks.length === 0}
+                  >
+                    全部播放
+                  </button>
+                  <button
+                    className="quiet-button"
+                    onClick={playRandomTwentyFromPlaylist}
+                    disabled={playlistTracks.length === 0}
+                  >
+                    随机选择20首
+                  </button>
+                  <SearchField
+                    value={playlistSearch}
+                    onChange={setPlaylistSearch}
+                    placeholder="搜索歌单内曲目…"
+                    aria-label="搜索歌单"
+                  />
+                </div>
               </div>
-              <div className="track-table" role="table" aria-label="歌单曲目">
+              <div className="track-table with-actions" role="table" aria-label="歌单曲目">
                 <div className="track-table-header" role="row">
                   <span>#</span><span>标题</span><span>来源</span>
                 </div>
                 {visiblePlaylistRows.map(({ track, index }) => (
-                  <button
+                  <div
                     key={track.id}
                     className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
-                    onClick={() => playTemporary(track)}
                     role="row"
+                    tabIndex={0}
+                    onClick={() => openTrackDetail(track)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        openTrackDetail(track)
+                      }
+                    }}
                   >
                     <span className="track-number">{track.id === currentTrackId ? '▶' : index + 1}</span>
                     <span className="track-name-cell">
@@ -653,7 +719,17 @@ export default function App() {
                       <span className="track-artist">{track.sourceId === 'baidu' ? '百度网盘' : '本地'}</span>
                     </span>
                     <span className="track-source">{track.sourceId}</span>
-                  </button>
+                    <button
+                      className="row-play-button"
+                      aria-label={`播放 ${track.title}`}
+                      onClick={event => {
+                        event.stopPropagation()
+                        playTemporary(track)
+                      }}
+                    >
+                      ▶
+                    </button>
+                  </div>
                 ))}
                 {playlistTracks.length === 0 && <div className="directory-empty">歌单中还没有曲目。</div>}
                 {playlistTracks.length > 0 && visiblePlaylistRows.length === 0 && (
@@ -800,7 +876,6 @@ export default function App() {
                             onClick={() => {
                               if (root.playlistId) {
                                 setMainView({ kind: 'playlist', playlistId: root.playlistId })
-                                void loadPlaylistTracks(root.playlistId)
                               }
                             }}
                           >
@@ -894,6 +969,9 @@ export default function App() {
         onNext={playNext}
         onPrevious={playPrevious}
         onAddToPlaylist={playlistId => void addCurrentTrackToPlaylist(playlistId)}
+        onOpenDetail={() => {
+          if (currentTrack) openTrackDetail(currentTrack)
+        }}
       />
     </div>
   )

@@ -15,6 +15,7 @@ interface PlayerBarProps {
   onNext(): void
   onPrevious(): void
   onAddToPlaylist(playlistId: string): void
+  onOpenDetail(): void
 }
 
 function formatTime(seconds: number): string {
@@ -36,7 +37,8 @@ export default function PlayerBar({
   onTemporaryEnded,
   onNext,
   onPrevious,
-  onAddToPlaylist
+  onAddToPlaylist,
+  onOpenDetail
 }: PlayerBarProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -153,7 +155,20 @@ export default function PlayerBar({
         onError={() => setPlaybackError('无法播放此文件')}
       />
 
-      <div className="now-playing">
+      <div
+        className="now-playing"
+        role="button"
+        tabIndex={0}
+        aria-label="查看详情"
+        title="查看详情"
+        onClick={onOpenDetail}
+        onKeyDown={event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            onOpenDetail()
+          }
+        }}
+      >
         <div className="cover-placeholder" aria-hidden="true">♪</div>
         <div className="now-playing-text">
           <strong>{currentTrack?.title ?? '未在播放'}</strong>
