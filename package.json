@@ -2,22 +2,35 @@
   "name": "corner",
   "version": "0.0.1",
   "private": true,
+  "description": "macOS music player for local files and cloud libraries",
+  "author": "lenohard",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lenohard/macos-player.git"
+  },
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "icon": "bash scripts/generate-icon.sh",
     "typecheck": "tsc -b tsconfig.main.json && tsc -b tsconfig.preload.json && tsc -b tsconfig.renderer.json",
-    "preview": "electron-vite preview"
+    "preview": "electron-vite preview",
+    "dist": "npm run build && electron-builder --mac --publish never",
+    "release": "npm run build && electron-builder --mac --publish always"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "electron": "^43.3.0",
+    "electron-builder": "^26.0.12",
     "electron-vite": "^2.3.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "compare-versions": "^6.1.1",
+    "electron-updater": "^6.8.9"
   }
 }

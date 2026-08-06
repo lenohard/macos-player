@@ -16,6 +16,8 @@ npm run typecheck    # main + preload + renderer TS projects
 npm run build        # output to out/
 npm run icon         # generate build/icon.icns from the corner Logo
 npm run preview      # run packaged build
+npm run dist         # mac dmg + zip → dist/ (no upload)
+npm run release      # build + publish GitHub Release (set GH_TOKEN)
 ```
 
 Do not commit `node_modules/`, `out/`, or `*.tsbuildinfo`.
@@ -101,7 +103,7 @@ When adding features: extend **shared types first**, then main handler, preload,
 | M3 generic WebDAV (Quark) | not started |
 | M4 search, favorites, recents | not started |
 | M5 macOS polish (media keys, menus) | not started |
-| M6 packaging / signing | icon resource configured; packaging/signing not started |
+| M6 packaging / signing | electron-builder + GitHub auto-update wired; unsigned local `npm run dist`; CI release on `v*.*.*` tag |
 
 Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by user global `local/` rule; still useful locally).
 
@@ -113,6 +115,34 @@ Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by
 4. Verify with `npm run typecheck` and `npm run build` after substantive changes.
 5. Quark = **WebDAV provider abstraction**; do not implement Aliyun/Quark proprietary APIs unless explicitly requested.
 6. Prefer extending SQLite + IPC over in-memory maps for library state.
+
+## Lessons learned (playback, packaging, agents)
+
+### Playback queue vs playlist (UI)
+
+- **播放列表（queue）** = 当前可持久化的播放队列（SQLite `queue_*`）；侧边栏「播放列表」视图编辑的是它。
+- **歌单（playlist）** = 库里的命名列表；进入歌单应 **只加载曲目供浏览**，不要用 `replaceQueueAndPlay`。
+- 用户显式操作才改队列并开播：**全部播放**（整单替换 + 自动播放）、**随机选择20首**（随机最多 20 首 + 自动播放）；单首点击仍走 **temporary track**，播完回到队列。
+- **持久化陷阱**：启动时 `tracks` 初始为 `[]`；若在 hydration 完成或队列仍空时 `queueSave`，会把库里已有队列 **清空**。只在 `queueHydrated && tracks.length > 0` 时防抖写入。
+- 恢复队列时过滤已删曲目并重映射 `currentIndex` / `playOrder`（main `loadPlaybackQueue`）。
+
+### Packaging & hot update (M6)
+
+- **不必照搬** [deepchat](~/projects/deepchat) 的 channel、releaseAssembly、updater-metadata-consumer；corner 用 **最小链路**：`electron-builder` + `electron-updater` + GitHub Releases。
+- **可对齐 deepchat 的主进程模式**：`autoDownload = false`、`autoInstallOnAppQuit = true`、`compare-versions` 过滤 `<=` 当前版、`quitAndInstall(false, true)`、releaseNotes/releaseDate 格式化。
+- **产物**：mac 同时打 **dmg**（给人装）和 **zip**（给 auto-update）；确认 `dist/latest-mac.yml` 存在后再发 Release。
+- **更新仅打包版**：`app.isPackaged` 为 false 时 UI 显示「开发模式不检查更新」，`checkForUpdates` 直接返回 snapshot，不要误报 error。
+- **`UpdateSnapshot`**：对 renderer 始终带 `appVersion`、`enabled`；内部 patch 用不含这两字段的 state，避免重复字段不一致。
+- **`package.json`**：`repository` 字段、`version` 与 git tag（如 `v0.0.2`）一致；发布前确认构建机有 **BAIDU_***（Vite `define` 打进 main bundle，不是运行时读 `.env`）。
+- **本地**：`npm run dist`（不上传）；**发布**：`npm run release` 或 push `v*.*.*` tag 触发 `.github/workflows/release-mac.yml`（`GH_TOKEN` = `GITHUB_TOKEN`）。
+- **签名/公证**：本地可先 unsigned + zip 自测更新；对外分发再补 Developer ID + notarize（deepchat 的 `afterSign` 作参考即可）。
+
+### Agent / workflow pitfalls
+
+- 多个 pi/Cursor 会话 **共用同一 repo cwd** 时，主任务 commit 后 **陈旧 subagent 仍可能改工作树** 或留下未跟踪文件；大改后尽快 typecheck + commit，或 subagent 用 **git worktree**。
+- 本机 **`GH_TOKEN` 环境变量会遮蔽 gh/keyring**；`gh` / `git push` 用 `env -u GH_TOKEN …`（见全局 agent memory）。
+- Vite 主配置文件名必须是 **`electron.vite.config.js`**（不是连字符变体），否则 main 外链/环境注入不生效。
+- 验证习惯：`npm run typecheck` → `npm run build` → 打包改动时加 `npm run dist`；IPC 改动顺序：**`src/shared/ipc.ts` → main → preload → renderer**。
 
 ## Remote
 

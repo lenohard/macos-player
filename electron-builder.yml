@@ -1,0 +1,35 @@
+appId: com.lenohard.corner
+productName: corner
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**/*
+  - package.json
+  - '!**/.env'
+  - '!**/.env.*'
+  - '!**/*.tsbuildinfo'
+  - '!src/**'
+  - '!scripts/**'
+  - '!local/**'
+  - '!electron.vite.config.js'
+  - '!tsconfig*.json'
+  - '!electron-builder.yml'
+  - '!**/{.DS_Store,Thumbs.db}'
+mac:
+  category: public.app-category.music
+  icon: build/icon.icns
+  entitlementsInherit: build/entitlements.mac.plist
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  target:
+    - target: dmg
+    - target: zip
+  artifactName: corner-${version}-mac-${arch}.${ext}
+dmg:
+  sign: false
+  writeUpdateInfo: false
+publish:
+  provider: github
+  owner: lenohard
+  repo: macos-player

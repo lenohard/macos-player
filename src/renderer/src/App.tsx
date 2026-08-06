@@ -7,8 +7,10 @@ import type {
   PlaylistSummary,
   RepeatMode,
   SyncProgress,
-  Track
+  Track,
+  UpdateSnapshot
 } from '@shared/ipc'
+import AboutPanel from './AboutPanel'
 import PlayerBar from './PlayerBar'
 import SearchField from './SearchField'
 import TrackDetail from './TrackDetail'
@@ -93,6 +95,7 @@ type MainView =
   | { kind: 'source'; sourceId: string }
   | { kind: 'playlist'; playlistId: string }
   | { kind: 'queue' }
+  | { kind: 'about' }
   | { kind: 'trackDetail'; trackId: string; returnTo: MainView }
 
 type BaiduPanel = 'browse' | 'index'
@@ -129,6 +132,17 @@ export default function App() {
   const [importPlaylistName, setImportPlaylistName] = useState('')
   const [baiduPanel, setBaiduPanel] = useState<BaiduPanel>('browse')
   const queueRowRef = useRef<HTMLButtonElement | null>(null)
+  const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot>({
+    appVersion: '…',
+    enabled: false,
+    status: 'idle',
+    error: null,
+    progress: null,
+    info: null
+  })
+
+  const updateBusy =
+    updateSnapshot.status === 'checking' || updateSnapshot.status === 'downloading'
 
   const activeSourceId = mainView.kind === 'source' ? mainView.sourceId : 'baidu'
   const activePlaylistId = mainView.kind === 'playlist' ? mainView.playlistId : null
@@ -193,6 +207,11 @@ export default function App() {
     const unsubscribe = window.api.onSyncProgress(progress => setSyncProgress(progress))
     return unsubscribe
   }, [loadLibraryPage, refreshPlaylists])
+
+  useEffect(() => {
+    void window.api.updateGetStatus().then(setUpdateSnapshot).catch(() => {})
+    return window.api.onUpdateStatus(setUpdateSnapshot)
+  }, [])
 
   useEffect(() => {
     void window.api.queueLoad()
@@ -580,6 +599,16 @@ export default function App() {
           ))}
         </nav>
 
+        <button
+          type="button"
+          className={`source-button sidebar-about ${mainView.kind === 'about' ? 'active' : ''}`}
+          onClick={() => setMainView({ kind: 'about' })}
+        >
+          <span className="source-icon source-local" aria-hidden="true">i</span>
+          <span>关于</span>
+          <span className="source-status">v{updateSnapshot.appVersion}</span>
+        </button>
+
         <div className="sidebar-footer">
           <span className="status-dot" />
           SQLite 音乐库已启用
@@ -589,8 +618,28 @@ export default function App() {
       <main className="main-content">
         <header className="content-header">
           <div>
-            <p className="eyebrow">{mainView.kind === 'queue' ? '播放列表' : isPlaylistView ? '歌单' : mainView.kind === 'trackDetail' ? '曲目详情' : '音乐库'}</p>
-            <h1>{mainView.kind === 'queue' ? '当前播放' : isPlaylistView ? activePlaylist?.name ?? '歌单' : mainView.kind === 'trackDetail' ? detailTrack?.title ?? '曲目' : activeSource?.name ?? '音乐'}</h1>
+            <p className="eyebrow">
+              {mainView.kind === 'about'
+                ? '关于'
+                : mainView.kind === 'queue'
+                  ? '播放列表'
+                  : isPlaylistView
+                    ? '歌单'
+                    : mainView.kind === 'trackDetail'
+                      ? '曲目详情'
+                      : '音乐库'}
+            </p>
+            <h1>
+              {mainView.kind === 'about'
+                ? 'corner'
+                : mainView.kind === 'queue'
+                  ? '当前播放'
+                  : isPlaylistView
+                    ? activePlaylist?.name ?? '歌单'
+                    : mainView.kind === 'trackDetail'
+                      ? detailTrack?.title ?? '曲目'
+                      : activeSource?.name ?? '音乐'}
+            </h1>
           </div>
           {isLocal && (
             <button className="primary-button" onClick={() => void chooseLocalTracks()} disabled={isChoosing}>
@@ -613,6 +662,16 @@ export default function App() {
         )}
 
         <section className="library-content">
+          {mainView.kind === 'about' && (
+            <AboutPanel
+              snapshot={updateSnapshot}
+              busy={updateBusy}
+              onCheck={() => void window.api.updateCheck().then(setUpdateSnapshot)}
+              onDownload={() => void window.api.updateDownload().then(setUpdateSnapshot)}
+              onInstall={() => void window.api.updateInstall()}
+            />
+          )}
+
           {detailReturnView && detailTrack && (
             <TrackDetail
               track={detailTrack}

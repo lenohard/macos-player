@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC_CHANNELS,
   SYNC_PROGRESS_CHANNEL,
+  UPDATE_STATUS_CHANNEL,
   type BaiduAuthStatus,
   type BaiduImportResult,
   type CloudEntry,
@@ -13,7 +14,8 @@ import {
   type SyncProgress,
   type Track,
   type TrackDetail,
-  type TracksPage
+  type TracksPage,
+  type UpdateSnapshot
 } from '../shared/ipc'
 
 const api: IPCApi = {
@@ -56,7 +58,16 @@ const api: IPCApi = {
   playlistAddTrack: (playlistId: string, trackId: string): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.playlistAddTrack, playlistId, trackId),
   playlistRemoveTrack: (playlistId: string, trackId: string): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.playlistRemoveTrack, playlistId, trackId)
+    ipcRenderer.invoke(IPC_CHANNELS.playlistRemoveTrack, playlistId, trackId),
+  updateGetStatus: (): Promise<UpdateSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.updateGetStatus),
+  updateCheck: (): Promise<UpdateSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.updateCheck),
+  updateDownload: (): Promise<UpdateSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.updateDownload),
+  updateInstall: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.updateInstall),
+  onUpdateStatus: (listener: (snapshot: UpdateSnapshot) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, snapshot: UpdateSnapshot) => listener(snapshot)
+    ipcRenderer.on(UPDATE_STATUS_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(UPDATE_STATUS_CHANNEL, handler)
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)

@@ -22,10 +22,15 @@ export const IPC_CHANNELS = {
   playlistDelete: 'playlist:delete',
   playlistListTracks: 'playlist:listTracks',
   playlistAddTrack: 'playlist:addTrack',
-  playlistRemoveTrack: 'playlist:removeTrack'
+  playlistRemoveTrack: 'playlist:removeTrack',
+  updateGetStatus: 'update:getStatus',
+  updateCheck: 'update:check',
+  updateDownload: 'update:download',
+  updateInstall: 'update:install'
 } as const
 
 export const SYNC_PROGRESS_CHANNEL = 'library:syncProgress'
+export const UPDATE_STATUS_CHANNEL = 'update:status'
 
 export interface Track {
   id: string
@@ -115,6 +120,30 @@ export interface SyncProgress {
   message?: string
 }
 
+export type UpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+export interface UpdateReleaseInfo {
+  version: string
+  releaseDate: string
+  releaseNotes: string
+}
+
+export interface UpdateSnapshot {
+  appVersion: string
+  enabled: boolean
+  status: UpdateStatus
+  error: string | null
+  progress: number | null
+  info: UpdateReleaseInfo | null
+}
+
 export interface IPCApi {
   queueSave(state: PlaybackQueueState): Promise<void>
   queueLoad(): Promise<PlaybackQueueState | null>
@@ -139,6 +168,11 @@ export interface IPCApi {
   playlistListTracks(playlistId: string): Promise<Track[]>
   playlistAddTrack(playlistId: string, trackId: string): Promise<void>
   playlistRemoveTrack(playlistId: string, trackId: string): Promise<void>
+  updateGetStatus(): Promise<UpdateSnapshot>
+  updateCheck(): Promise<UpdateSnapshot>
+  updateDownload(): Promise<UpdateSnapshot>
+  updateInstall(): Promise<boolean>
+  onUpdateStatus(listener: (snapshot: UpdateSnapshot) => void): () => void
 }
 
 declare global {

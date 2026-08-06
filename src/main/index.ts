@@ -12,12 +12,15 @@ import { pathToFileURL } from 'url'
 import {
   IPC_CHANNELS,
   SYNC_PROGRESS_CHANNEL,
+  UPDATE_STATUS_CHANNEL,
   type CloudEntry,
   type LibrarySource,
   type PlaybackQueueState,
   type SyncProgress,
-  type Track
+  type Track,
+  type UpdateSnapshot
 } from '../shared/ipc'
+import { AppUpdater } from './updater'
 import { resyncBaiduDirectory, syncBaiduDirectory } from './baidu-sync'
 import { BaiduService } from './baidu'
 import { openLibraryDatabase } from './library-db'
@@ -43,6 +46,12 @@ app.setName('corner')
 let mainWindow: BrowserWindow | null = null
 let library: LibraryService | null = null
 const baiduService = new BaiduService()
+
+function emitUpdateStatus(snapshot: UpdateSnapshot): void {
+  mainWindow?.webContents.send(UPDATE_STATUS_CHANNEL, snapshot)
+}
+
+const appUpdater = new AppUpdater(emitUpdateStatus)
 
 function getLibrary(): LibraryService {
   if (!library) library = new LibraryService(openLibraryDatabase())
@@ -187,6 +196,11 @@ ipcMain.handle(IPC_CHANNELS.playlistRemoveTrack, (_event, playlistId: string, tr
   getLibrary().removeTrackFromPlaylist(playlistId, trackId)
 })
 
+ipcMain.handle(IPC_CHANNELS.updateGetStatus, () => appUpdater.getSnapshot())
+ipcMain.handle(IPC_CHANNELS.updateCheck, () => appUpdater.checkForUpdates())
+ipcMain.handle(IPC_CHANNELS.updateDownload, () => appUpdater.downloadUpdate())
+ipcMain.handle(IPC_CHANNELS.updateInstall, () => appUpdater.quitAndInstall())
+
 app.whenReady().then(() => {
   getLibrary()
 
@@ -206,6 +220,7 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+  appUpdater.scheduleStartupCheck()
 })
 
 app.on('window-all-closed', () => {
