@@ -75,7 +75,7 @@ APIs (main only): authorize `openapi.baidu.com/oauth/2.0/authorize`; token `/oau
 
 ## IPC surface
 
-All channels live in `IPC_CHANNELS` and `IPCApi` in `src/shared/ipc.ts`. Sync progress events use `SYNC_PROGRESS_CHANNEL` (`library:syncProgress`), not invoke.
+All channels live in `IPC_CHANNELS` and `IPCApi` in `src/shared/ipc.ts`. Sync progress events use `SYNC_PROGRESS_CHANNEL` (`library:syncProgress`), not invoke. Track details use `track:getDetail` and are loaded on demand; `TrackDetail` carries path, size, modified time, MD5, and the provider remote ID.
 
 When adding features: extend **shared types first**, then main handler, preload, renderer.
 
