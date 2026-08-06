@@ -1,0 +1,233 @@
+import { useEffect, useRef, useState } from 'react'
+import type { PlaylistSummary, Track } from '@shared/ipc'
+
+interface PlayerBarProps {
+  tracks: Track[]
+  currentIndex: number
+  shuffle: boolean
+  playlists: PlaylistSummary[]
+  onShuffleChange(shuffle: boolean): void
+  onNext(): void
+  onPrevious(): void
+  onAddToPlaylist(playlistId: string): void
+}
+
+function formatTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`
+}
+
+export default function PlayerBar({
+  tracks,
+  currentIndex,
+  shuffle,
+  playlists,
+  onShuffleChange,
+  onNext,
+  onPrevious,
+  onAddToPlaylist
+}: PlayerBarProps) {
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [volume, setVolume] = useState(0.8)
+  const [playbackError, setPlaybackError] = useState<string | null>(null)
+  const [showPlaylistMenu, setShowPlaylistMenu] = useState(false)
+  const currentTrack = tracks[currentIndex]
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+
+    if (!currentTrack) {
+      audio.pause()
+      audio.removeAttribute('src')
+      audio.load()
+      setIsPlaying(false)
+      setCurrentTime(0)
+      setDuration(0)
+      return
+    }
+
+    setPlaybackError(null)
+    setCurrentTime(0)
+    setDuration(0)
+    audio.src = currentTrack.playbackUrl
+    audio.load()
+    void audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false))
+  }, [currentTrack])
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = volume
+  }, [volume])
+
+  async function togglePlayback(): Promise<void> {
+    const audio = audioRef.current
+    if (!audio || !currentTrack) return
+
+    if (audio.paused) {
+      setPlaybackError(null)
+      try {
+        await audio.play()
+        setIsPlaying(true)
+      } catch {
+        setPlaybackError('无法播放此文件')
+      }
+    } else {
+      audio.pause()
+      setIsPlaying(false)
+    }
+  }
+
+  function handlePrevious(): void {
+    const audio = audioRef.current
+    if (!audio || currentIndex < 0) return
+    if (audio.currentTime > 3) {
+      audio.currentTime = 0
+      return
+    }
+    onPrevious()
+  }
+
+  function handleEnded(): void {
+    if (currentIndex >= 0 && currentIndex < tracks.length - 1) {
+      onNext()
+    } else if (shuffle && tracks.length > 1) {
+      onNext()
+    } else {
+      setIsPlaying(false)
+    }
+  }
+
+  function seek(value: number): void {
+    if (!audioRef.current) return
+    audioRef.current.currentTime = value
+    setCurrentTime(value)
+  }
+
+  const canGoNext = tracks.length > 0 && currentIndex >= 0
+  const canGoPrevious = tracks.length > 0 && currentIndex >= 0
+
+  return (
+    <footer className="player-bar">
+      <audio
+        ref={audioRef}
+        preload="metadata"
+        onLoadedMetadata={event => setDuration(event.currentTarget.duration)}
+        onDurationChange={event => setDuration(event.currentTarget.duration)}
+        onTimeUpdate={event => setCurrentTime(event.currentTarget.currentTime)}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onEnded={handleEnded}
+        onError={() => setPlaybackError('无法播放此文件')}
+      />
+
+      <div className="now-playing">
+        <div className="cover-placeholder" aria-hidden="true">♪</div>
+        <div className="now-playing-text">
+          <strong>{currentTrack?.title ?? '未在播放'}</strong>
+          <span>{playbackError ?? currentTrack?.artist ?? (currentTrack ? '云盘音乐' : '选择音乐开始播放')}</span>
+        </div>
+      </div>
+
+      <div className="transport">
+        <div className="transport-buttons">
+          <button
+            className={`icon-button ${shuffle ? 'active-toggle' : ''}`}
+            onClick={() => onShuffleChange(!shuffle)}
+            disabled={tracks.length < 2}
+            aria-label="随机播放"
+            title="随机播放"
+          >
+            ⤮
+          </button>
+          <button
+            className="icon-button"
+            onClick={handlePrevious}
+            disabled={!canGoPrevious}
+            aria-label="上一首"
+            title="上一首"
+          >
+            ‹
+          </button>
+          <button
+            className="play-button"
+            onClick={() => void togglePlayback()}
+            disabled={!currentTrack}
+            aria-label={isPlaying ? '暂停' : '播放'}
+            title={isPlaying ? '暂停' : '播放'}
+          >
+            {isPlaying ? 'Ⅱ' : '▶'}
+          </button>
+          <button
+            className="icon-button"
+            onClick={onNext}
+            disabled={!canGoNext}
+            aria-label="下一首"
+            title="下一首"
+          >
+            ›
+          </button>
+          <div className="add-to-playlist">
+            <button
+              className="icon-button"
+              disabled={!currentTrack}
+              aria-label="添加到歌单"
+              title="添加到歌单"
+              onClick={() => setShowPlaylistMenu(open => !open)}
+            >
+              ＋
+            </button>
+            {showPlaylistMenu && currentTrack && (
+              <div className="playlist-menu" role="menu">
+                {playlists.length === 0 && <span className="menu-empty">暂无歌单</span>}
+                {playlists.map(playlist => (
+                  <button
+                    key={playlist.id}
+                    role="menuitem"
+                    onClick={() => {
+                      onAddToPlaylist(playlist.id)
+                      setShowPlaylistMenu(false)
+                    }}
+                  >
+                    {playlist.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="progress-row">
+          <span>{formatTime(currentTime)}</span>
+          <input
+            className="progress-slider"
+            type="range"
+            min={0}
+            max={Math.max(duration, 1)}
+            step={0.1}
+            value={Math.min(currentTime, Math.max(duration, 1))}
+            onChange={event => seek(Number(event.target.value))}
+            disabled={!currentTrack || duration === 0}
+            aria-label="播放进度"
+          />
+          <span>{formatTime(duration)}</span>
+        </div>
+      </div>
+
+      <div className="volume-control">
+        <span aria-hidden="true">音量</span>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={volume}
+          onChange={event => setVolume(Number(event.target.value))}
+          aria-label="音量"
+        />
+      </div>
+    </footer>
+  )
+}
