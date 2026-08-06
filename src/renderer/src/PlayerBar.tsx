@@ -4,9 +4,14 @@ import type { PlaylistSummary, Track } from '@shared/ipc'
 interface PlayerBarProps {
   tracks: Track[]
   currentIndex: number
+  currentTrack?: Track
+  temporaryTrack: boolean
   shuffle: boolean
+  repeatMode: 'off' | 'all' | 'one'
   playlists: PlaylistSummary[]
   onShuffleChange(shuffle: boolean): void
+  onRepeatChange(): void
+  onTemporaryEnded(): void
   onNext(): void
   onPrevious(): void
   onAddToPlaylist(playlistId: string): void
@@ -21,9 +26,14 @@ function formatTime(seconds: number): string {
 export default function PlayerBar({
   tracks,
   currentIndex,
+  currentTrack,
+  temporaryTrack,
   shuffle,
+  repeatMode,
   playlists,
   onShuffleChange,
+  onRepeatChange,
+  onTemporaryEnded,
   onNext,
   onPrevious,
   onAddToPlaylist
@@ -35,7 +45,6 @@ export default function PlayerBar({
   const [volume, setVolume] = useState(0.8)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const [showPlaylistMenu, setShowPlaylistMenu] = useState(false)
-  const currentTrack = tracks[currentIndex]
 
   useEffect(() => {
     const audio = audioRef.current
@@ -92,13 +101,33 @@ export default function PlayerBar({
   }
 
   function handleEnded(): void {
-    if (currentIndex >= 0 && currentIndex < tracks.length - 1) {
-      onNext()
-    } else if (shuffle && tracks.length > 1) {
-      onNext()
-    } else {
-      setIsPlaying(false)
+    if (!currentTrack) return
+    if (repeatMode === 'one') {
+      const audio = audioRef.current
+      if (audio) {
+        audio.currentTime = 0
+        void audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false))
+      }
+      return
     }
+    if (temporaryTrack) {
+      setIsPlaying(false)
+      onTemporaryEnded()
+      return
+    }
+    if (repeatMode === 'all' || shuffle || currentIndex < tracks.length - 1) {
+      if (tracks.length <= 1 && repeatMode === 'all') {
+        const audio = audioRef.current
+        if (audio) {
+          audio.currentTime = 0
+          void audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false))
+        }
+      } else {
+        onNext()
+      }
+      return
+    }
+    setIsPlaying(false)
   }
 
   function seek(value: number): void {
@@ -142,6 +171,15 @@ export default function PlayerBar({
             title="随机播放"
           >
             ⤮
+          </button>
+          <button
+            className={`icon-button ${repeatMode !== 'off' ? 'active-toggle' : ''}`}
+            onClick={onRepeatChange}
+            disabled={!currentTrack}
+            aria-label="循环模式"
+            title={repeatMode === 'off' ? '不循环' : repeatMode === 'all' ? '列表循环' : '单曲循环'}
+          >
+            {repeatMode === 'one' ? '1' : '↻'}
           </button>
           <button
             className="icon-button"

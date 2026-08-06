@@ -9,6 +9,7 @@ import {
   type WebContentsWillNavigateEventParams
 } from 'electron'
 import type { BaiduAuthStatus, CloudEntry } from '../shared/ipc'
+import { fetchWithElectronNet, isAsciiHeaderValue } from './media-net'
 
 interface BaiduConfig {
   clientId: string
@@ -182,12 +183,10 @@ export class BaiduService {
       path
     }).toString()
 
-    const headers = new Headers(request.headers)
-    headers.set('User-Agent', 'pan.baidu.com')
-    return net.fetch(url.toString(), {
-      method: request.method,
-      headers
-    })
+    const headers: Record<string, string> = { 'User-Agent': 'pan.baidu.com' }
+    const range = request.headers.get('Range')
+    if (range && isAsciiHeaderValue(range)) headers.Range = range
+    return fetchWithElectronNet(url.toString(), headers)
   }
 
   private requireConfig(): BaiduConfig {

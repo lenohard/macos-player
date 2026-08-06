@@ -1,7 +1,15 @@
 import { randomUUID } from 'crypto'
 import { basename, extname } from 'path'
-import type Database from 'better-sqlite3'
-import type { CloudEntry, PlaylistSummary, Track, TracksPage } from '../shared/ipc'
+import type { LibraryDatabase } from './library-db'
+import type {
+  CloudEntry,
+  PlaybackQueueState,
+  PlaylistSummary,
+  RepeatMode,
+  Track,
+  TrackDetail,
+  TracksPage
+} from '../shared/ipc'
 
 export interface TrackRow {
   id: string
@@ -41,8 +49,19 @@ export function rowToTrack(row: TrackRow): Track {
   }
 }
 
+export function rowToTrackDetail(row: TrackRow): TrackDetail {
+  return {
+    ...rowToTrack(row),
+    path: row.path,
+    size: row.size,
+    modifiedAt: row.modified_at,
+    md5: row.md5,
+    remoteId: row.remote_id
+  }
+}
+
 export class LibraryService {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: LibraryDatabase) {}
 
   getTrackRow(id: string): TrackRow | null {
     const row = this.db.prepare(`
@@ -52,6 +71,11 @@ export class LibraryService {
       WHERE id = ? AND is_deleted = 0
     `).get(id) as TrackRow | undefined
     return row ?? null
+  }
+
+  getTrackDetail(id: string): TrackDetail | null {
+    const row = this.getTrackRow(id)
+    return row ? rowToTrackDetail(row) : null
   }
 
   resolveMedia(id: string): { kind: 'local' | 'baidu'; path: string } | null {
@@ -88,11 +112,11 @@ export class LibraryService {
       WHERE ${where}
       ORDER BY title COLLATE NOCASE ASC
       LIMIT ? OFFSET ?
-    `).all(...params) as TrackRow[]
+    `).all(...params) as unknown as TrackRow[]
 
     return {
       tracks: rows.map(rowToTrack),
-      total: totalRow.count,
+      total: Number(totalRow.count),
       offset,
       limit
     }
@@ -187,7 +211,7 @@ export class LibraryService {
         AND path LIKE ? ESCAPE '\\'
         AND (last_seen_sync IS NULL OR last_seen_sync != ?)
     `).run(Date.now(), `${escapeLike(prefix)}%`, syncToken)
-    return result.changes
+    return Number(result.changes)
   }
 
   upsertLibraryRoot(sourceId: string, rootPath: string, playlistId: string): void {
@@ -217,7 +241,7 @@ export class LibraryService {
       FROM library_roots
       WHERE source_id = ?
       ORDER BY (last_sync_at IS NULL), last_sync_at DESC
-    `).all(sourceId) as LibraryRootRow[]
+    `).all(sourceId) as unknown as LibraryRootRow[]
   }
 
   trackIdsUnderBaiduRoot(rootPath: string): string[] {
@@ -228,6 +252,91 @@ export class LibraryService {
       ORDER BY title COLLATE NOCASE ASC
     `).all(`${escapeLike(prefix)}%`) as Array<{ id: string }>
     return rows.map(row => row.id)
+  }
+
+  savePlaybackQueue(state: PlaybackQueueState): void {
+    const currentIndex = Number.isInteger(state.currentIndex) && state.currentIndex >= -1
+      ? Math.min(state.currentIndex, state.tracks.length - 1)
+      : -1
+    const repeatMode: RepeatMode = state.repeatMode === 'all' || state.repeatMode === 'one'
+      ? state.repeatMode
+      : 'off'
+    const playOrder = state.playOrder.filter(index => Number.isInteger(index) && index >= 0 && index < state.tracks.length)
+
+    runInTransaction(this.db, () => {
+      this.db.prepare('DELETE FROM queue_tracks').run()
+      const insert = this.db.prepare('INSERT INTO queue_tracks (position, track_id) VALUES (?, ?)')
+      state.tracks.forEach((track, position) => insert.run(position, track.id))
+      this.db.prepare(`
+        INSERT INTO queue_state (id, current_index, shuffle, repeat_mode, play_order)
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          current_index = excluded.current_index,
+          shuffle = excluded.shuffle,
+          repeat_mode = excluded.repeat_mode,
+          play_order = excluded.play_order
+      `).run(currentIndex, state.shuffle ? 1 : 0, repeatMode, JSON.stringify(playOrder))
+    })
+  }
+
+  loadPlaybackQueue(): PlaybackQueueState | null {
+    const stateRow = this.db.prepare(`
+      SELECT current_index, shuffle, repeat_mode, play_order
+      FROM queue_state
+      WHERE id = 1
+    `).get() as {
+      current_index: number
+      shuffle: number
+      repeat_mode: string
+      play_order: string
+    } | undefined
+    if (!stateRow) return null
+
+    const rows = this.db.prepare(`
+      SELECT qt.position, t.id, t.source_id, t.remote_id, t.path, t.title, t.artist,
+             t.duration_sec, t.size, t.modified_at, t.md5, t.is_deleted
+      FROM queue_tracks qt
+      JOIN tracks t ON t.id = qt.track_id
+      WHERE t.is_deleted = 0
+      ORDER BY qt.position ASC
+    `).all() as unknown as Array<TrackRow & { position: number }>
+    const tracks = rows.map(rowToTrack)
+    const activePositions = new Map(rows.map((row, index) => [row.position, index]))
+
+    let currentIndex = -1
+    if (rows.length > 0) {
+      currentIndex = rows.findIndex(row => row.position === stateRow.current_index)
+      if (currentIndex < 0) currentIndex = rows.findIndex(row => row.position > stateRow.current_index)
+      if (currentIndex < 0) currentIndex = rows.length - 1
+    }
+
+    let savedOrder: unknown = []
+    try {
+      savedOrder = JSON.parse(stateRow.play_order)
+    } catch {
+      savedOrder = []
+    }
+    const playOrder: number[] = []
+    if (Array.isArray(savedOrder)) {
+      for (const value of savedOrder) {
+        if (!Number.isInteger(value)) continue
+        const activeIndex = activePositions.get(value)
+        if (activeIndex !== undefined && !playOrder.includes(activeIndex)) playOrder.push(activeIndex)
+      }
+    }
+    for (let index = 0; index < tracks.length; index += 1) {
+      if (!playOrder.includes(index)) playOrder.push(index)
+    }
+
+    return {
+      tracks,
+      currentIndex,
+      shuffle: stateRow.shuffle === 1,
+      repeatMode: stateRow.repeat_mode === 'all' || stateRow.repeat_mode === 'one'
+        ? stateRow.repeat_mode
+        : 'off',
+      playOrder
+    }
   }
 
   listPlaylists(): PlaylistSummary[] {
@@ -264,17 +373,17 @@ export class LibraryService {
     const result = this.db.prepare(`
       UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?
     `).run(trimmed, now, id)
-    if (result.changes === 0) throw new Error('歌单不存在。')
+    if (Number(result.changes) === 0) throw new Error('歌单不存在。')
     const summary = this.listPlaylists().find(playlist => playlist.id === id)
     if (!summary) throw new Error('歌单不存在。')
     return summary
   }
 
   deletePlaylist(id: string): void {
-    this.db.transaction(() => {
+    runInTransaction(this.db, () => {
       this.db.prepare('DELETE FROM playlist_tracks WHERE playlist_id = ?').run(id)
       this.db.prepare('DELETE FROM playlists WHERE id = ?').run(id)
-    })()
+    })
   }
 
   listPlaylistTracks(playlistId: string): Track[] {
@@ -285,7 +394,7 @@ export class LibraryService {
       JOIN tracks t ON t.id = pt.track_id
       WHERE pt.playlist_id = ? AND t.is_deleted = 0
       ORDER BY pt.position ASC
-    `).all(playlistId) as TrackRow[]
+    `).all(playlistId) as unknown as TrackRow[]
     return rows.map(rowToTrack)
   }
 
@@ -308,11 +417,11 @@ export class LibraryService {
   }
 
   addTracksToPlaylist(playlistId: string, trackIds: string[]): void {
-    this.db.transaction(() => {
+    runInTransaction(this.db, () => {
       for (const trackId of trackIds) {
         this.addTrackToPlaylist(playlistId, trackId)
       }
-    })()
+    })
   }
 
   removeTrackFromPlaylist(playlistId: string, trackId: string): void {
@@ -321,6 +430,17 @@ export class LibraryService {
       DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?
     `).run(playlistId, trackId)
     this.db.prepare('UPDATE playlists SET updated_at = ? WHERE id = ?').run(now, playlistId)
+  }
+}
+
+function runInTransaction(db: LibraryDatabase, fn: () => void): void {
+  db.exec('BEGIN')
+  try {
+    fn()
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
   }
 }
 

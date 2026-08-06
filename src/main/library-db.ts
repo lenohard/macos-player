@@ -1,8 +1,8 @@
-import Database from 'better-sqlite3'
+import { DatabaseSync } from 'node:sqlite'
 import { app } from 'electron'
 import { join } from 'path'
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 
 const MIGRATION_V1 = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -69,26 +69,47 @@ CREATE INDEX IF NOT EXISTS idx_playlist_tracks_order
   ON playlist_tracks(playlist_id, position);
 `
 
-function migrate(db: Database.Database): void {
+const MIGRATION_V2 = `
+CREATE TABLE IF NOT EXISTS queue_tracks (
+  position INTEGER PRIMARY KEY,
+  track_id TEXT NOT NULL REFERENCES tracks(id)
+);
+
+CREATE TABLE IF NOT EXISTS queue_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  current_index INTEGER NOT NULL DEFAULT -1,
+  shuffle INTEGER NOT NULL DEFAULT 0,
+  repeat_mode TEXT NOT NULL DEFAULT 'off',
+  play_order TEXT NOT NULL DEFAULT '[]'
+);
+`
+
+function migrate(db: DatabaseSync): void {
   const hasMeta = db.prepare(`
     SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'
   `).get() as { name: string } | undefined
+  const versionRow = hasMeta
+    ? db.prepare('SELECT version FROM schema_meta LIMIT 1').get() as { version: number } | undefined
+    : undefined
+  const currentVersion = versionRow?.version ?? 0
 
-  if (hasMeta) {
-    const versionRow = db.prepare('SELECT version FROM schema_meta LIMIT 1').get() as
-      | { version: number }
-      | undefined
-    if (versionRow?.version === SCHEMA_VERSION) return
+  if (currentVersion > SCHEMA_VERSION) {
+    throw new Error(`不支持的音乐库版本：${currentVersion}`)
   }
+  if (currentVersion === SCHEMA_VERSION) return
 
   db.exec('BEGIN')
   try {
     if (!hasMeta) {
       db.exec(MIGRATION_V1)
-      db.prepare('INSERT INTO schema_meta (version) VALUES (?)').run(SCHEMA_VERSION)
+      db.prepare('INSERT INTO schema_meta (version) VALUES (?)').run(1)
       db.prepare('INSERT INTO sources (id, type, name) VALUES (?, ?, ?)').run('local', 'local', '本地音乐')
       db.prepare('INSERT INTO sources (id, type, name) VALUES (?, ?, ?)').run('baidu', 'baidu', '百度网盘')
       db.prepare('INSERT INTO sources (id, type, name) VALUES (?, ?, ?)').run('quark', 'quark', '夸克网盘')
+    }
+    if (currentVersion < 2) {
+      db.exec(MIGRATION_V2)
+      db.prepare('UPDATE schema_meta SET version = ?').run(2)
     }
     db.exec('COMMIT')
   } catch (error) {
@@ -97,13 +118,13 @@ function migrate(db: Database.Database): void {
   }
 }
 
-export function openLibraryDatabase(): Database.Database {
+export function openLibraryDatabase(): DatabaseSync {
   const dbPath = join(app.getPath('userData'), 'library.sqlite')
-  const db = new Database(dbPath)
-  db.pragma('journal_mode = WAL')
-  db.pragma('foreign_keys = ON')
+  const db = new DatabaseSync(dbPath)
+  db.exec('PRAGMA journal_mode = WAL')
+  db.exec('PRAGMA foreign_keys = ON')
   migrate(db)
   return db
 }
 
-export type LibraryDatabase = Database.Database
+export type LibraryDatabase = DatabaseSync

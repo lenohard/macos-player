@@ -14,10 +14,7 @@ module.exports = defineConfig(({ mode }) => {
   return {
     main: {
       build: {
-        outDir: 'out/main',
-        rollupOptions: {
-          external: ['better-sqlite3']
-        }
+        outDir: 'out/main'
       },
       define
     },

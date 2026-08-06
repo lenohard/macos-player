@@ -1,0 +1,55 @@
+import { net } from 'electron'
+
+/** Node/Electron HTTP headers must be ByteStrings (Latin-1). */
+export function isAsciiHeaderValue(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) > 255) return false
+  }
+  return true
+}
+
+/** Outbound fetch for app-media proxy; never forwards renderer request headers. */
+export function fetchWithElectronNet(
+  url: string,
+  headers: Record<string, string>
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const req = net.request({ url, method: 'GET', headers })
+    req.on('response', res => {
+      const outHeaders = new Headers()
+      for (const key of Object.keys(res.headers)) {
+        const raw = res.headers[key]
+        if (raw === undefined) continue
+        const val = Array.isArray(raw) ? raw.join(', ') : String(raw)
+        if (!isAsciiHeaderValue(key) || !isAsciiHeaderValue(val)) continue
+        try {
+          outHeaders.set(key, val)
+        } catch {
+          // skip invalid header names/values
+        }
+      }
+
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          res.on('data', (chunk: Buffer) => {
+            controller.enqueue(new Uint8Array(chunk))
+          })
+          res.on('end', () => controller.close())
+          res.on('error', (err: Error) => controller.error(err))
+        },
+        cancel() {
+          req.abort()
+        }
+      })
+
+      resolve(
+        new Response(body, {
+          status: res.statusCode && res.statusCode >= 200 ? res.statusCode : 502,
+          headers: outHeaders
+        })
+      )
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}

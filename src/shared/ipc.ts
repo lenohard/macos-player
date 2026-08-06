@@ -2,8 +2,11 @@
 
 export const IPC_CHANNELS = {
   getSources: 'library:getSources',
+  queueSave: 'queue:save',
+  queueLoad: 'queue:load',
   listTracks: 'library:listTracks',
   listTracksPage: 'library:listTracksPage',
+  trackGetDetail: 'track:getDetail',
   openLocalTracks: 'library:openLocalTracks',
   baiduGetStatus: 'baidu:getStatus',
   baiduLogin: 'baidu:login',
@@ -31,6 +34,24 @@ export interface Track {
   durationSec: number | null
   sourceId: string
   playbackUrl: string
+}
+
+export interface TrackDetail extends Track {
+  path: string
+  size: number
+  modifiedAt: number
+  md5: string | null
+  remoteId: string | null
+}
+
+export type RepeatMode = 'off' | 'all' | 'one'
+
+export interface PlaybackQueueState {
+  tracks: Track[]
+  currentIndex: number
+  shuffle: boolean
+  repeatMode: RepeatMode
+  playOrder: number[]
 }
 
 export interface TracksPage {
@@ -95,9 +116,12 @@ export interface SyncProgress {
 }
 
 export interface IPCApi {
+  queueSave(state: PlaybackQueueState): Promise<void>
+  queueLoad(): Promise<PlaybackQueueState | null>
   getSources(): Promise<LibrarySource[]>
   listTracks(sourceId: string): Promise<Track[]>
   listTracksPage(sourceId: string, offset: number, limit: number, search?: string): Promise<TracksPage>
+  trackGetDetail(id: string): Promise<TrackDetail | null>
   openLocalTracks(): Promise<Track[]>
   baiduGetStatus(): Promise<BaiduAuthStatus>
   baiduLogin(): Promise<BaiduAuthStatus>

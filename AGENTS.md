@@ -10,7 +10,7 @@ Electron **macOS** music player for **local files** and **cloud libraries** (Bai
 
 ```bash
 cd /Users/senaca/projects/macos-player
-npm install          # runs electron-rebuild for better-sqlite3
+npm install          # install dependencies; SQLite uses Electron's built-in node:sqlite
 npm run dev          # electron-vite dev + Electron window
 npm run typecheck    # main + preload + renderer TS projects
 npm run build        # output to out/
@@ -60,7 +60,7 @@ Register privileged scheme **before** `app.whenReady()` (see `index.ts`).
 
 ## Baidu OAuth (developer setup)
 
-Set in the **same shell** that runs `npm run dev`:
+Main reads static `process.env.BAIDU_*` in `baidu.ts`. Values come from the shell **or** a gitignored repo-root `.env` (see `.gitignore`); `electron.vite.config.js` uses `loadEnv` + Vite `define` to bake them into the main bundle at **dev/build** time (personal packaging—do not commit `.env`).
 
 | Variable | Required |
 |----------|----------|
@@ -68,6 +68,8 @@ Set in the **same shell** that runs `npm run dev`:
 | `BAIDU_CLIENT_SECRET` | yes |
 | `BAIDU_REDIRECT_URI` | yes (must match Baidu open platform) |
 | `BAIDU_SCOPE` | optional, default `basic,netdisk` |
+
+After changing `.env`, restart `npm run dev` or run `npm run build` before `npm run preview`. Vite config filename must be `electron.vite.config.js` (not `electron-vite.config.js`) so the main build configuration is loaded.
 
 APIs (main only): authorize `openapi.baidu.com/oauth/2.0/authorize`; token `/oauth/2.0/token`; list `pan.baidu.com/rest/2.0/xpan/file`; download `d.pcs.baidu.com/rest/2.0/pcs/file` (User-Agent `pan.baidu.com`).
 
@@ -86,8 +88,8 @@ When adding features: extend **shared types first**, then main handler, preload,
 
 ## Build / native deps
 
-- `better-sqlite3` is **external** in main Rollup config; requires `postinstall` `electron-rebuild`.
-- After Electron major upgrades, verify rebuild and run `npm run typecheck && npm run build`.
+- SQLite uses Electron's built-in synchronous `node:sqlite` (`DatabaseSync`); there is no native SQLite npm addon or `electron-rebuild` step.
+- After Electron major upgrades, verify `node:sqlite` availability and run `npm run typecheck && npm run build`.
 
 ## Roadmap (high level)
 
@@ -119,3 +121,8 @@ git remote -v   # origin → git@github.com:lenohard/macos-player.git
 ```
 
 Push only when the user asks; do not force-push `main`.
+
+
+## Reference
+~/projects/deepchat
+When you have some issuse or have to make some decidisons You can refere to this repo whichi I think is a good and mature electron app.

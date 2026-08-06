@@ -8,22 +8,16 @@
     "build": "electron-vite build",
     "icon": "bash scripts/generate-icon.sh",
     "typecheck": "tsc -b tsconfig.main.json && tsc -b tsconfig.preload.json && tsc -b tsconfig.renderer.json",
-    "preview": "electron-vite preview",
-    "postinstall": "electron-rebuild -f -w better-sqlite3"
+    "preview": "electron-vite preview"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.15.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
-    "electron": "^33.0.0",
-    "electron-rebuild": "^3.2.9",
+    "electron": "^43.3.0",
     "electron-vite": "^2.3.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "typescript": "^5.6.0"
-  },
-  "dependencies": {
-    "better-sqlite3": "^13.0.3"
   }
 }

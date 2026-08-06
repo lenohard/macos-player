@@ -8,18 +8,25 @@ import {
   type IPCApi,
   type LibraryRootInfo,
   type LibrarySource,
+  type PlaybackQueueState,
   type PlaylistSummary,
   type SyncProgress,
   type Track,
+  type TrackDetail,
   type TracksPage
 } from '../shared/ipc'
 
 const api: IPCApi = {
+  queueSave: (state: PlaybackQueueState): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.queueSave, state),
+  queueLoad: (): Promise<PlaybackQueueState | null> => ipcRenderer.invoke(IPC_CHANNELS.queueLoad),
   getSources: (): Promise<LibrarySource[]> => ipcRenderer.invoke(IPC_CHANNELS.getSources),
   listTracks: (sourceId: string): Promise<Track[]> =>
     ipcRenderer.invoke(IPC_CHANNELS.listTracks, sourceId),
   listTracksPage: (sourceId: string, offset: number, limit: number, search?: string): Promise<TracksPage> =>
     ipcRenderer.invoke(IPC_CHANNELS.listTracksPage, sourceId, offset, limit, search),
+  trackGetDetail: (id: string): Promise<TrackDetail | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.trackGetDetail, id),
   openLocalTracks: (): Promise<Track[]> => ipcRenderer.invoke(IPC_CHANNELS.openLocalTracks),
   baiduGetStatus: (): Promise<BaiduAuthStatus> => ipcRenderer.invoke(IPC_CHANNELS.baiduGetStatus),
   baiduLogin: (): Promise<BaiduAuthStatus> => ipcRenderer.invoke(IPC_CHANNELS.baiduLogin),

@@ -14,6 +14,7 @@ import {
   SYNC_PROGRESS_CHANNEL,
   type CloudEntry,
   type LibrarySource,
+  type PlaybackQueueState,
   type SyncProgress,
   type Track
 } from '../shared/ipc'
@@ -21,6 +22,7 @@ import { resyncBaiduDirectory, syncBaiduDirectory } from './baidu-sync'
 import { BaiduService } from './baidu'
 import { openLibraryDatabase } from './library-db'
 import { LibraryService } from './library'
+import { fetchWithElectronNet, isAsciiHeaderValue } from './media-net'
 
 const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.wav'])
 
@@ -63,7 +65,8 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      spellcheck: false
     }
   })
 
@@ -80,6 +83,13 @@ const sources: LibrarySource[] = [
   { id: 'quark', name: '夸克网盘', type: 'quark' }
 ]
 
+ipcMain.handle(IPC_CHANNELS.queueSave, (_event, state: PlaybackQueueState): void => {
+  getLibrary().savePlaybackQueue(state)
+})
+ipcMain.handle(IPC_CHANNELS.queueLoad, (): PlaybackQueueState | null =>
+  getLibrary().loadPlaybackQueue()
+)
+
 ipcMain.handle(IPC_CHANNELS.getSources, (): LibrarySource[] => sources)
 
 ipcMain.handle(IPC_CHANNELS.listTracks, (_event, sourceId: string): Track[] => {
@@ -92,6 +102,7 @@ ipcMain.handle(
   (_event, sourceId: string, offset: number, limit: number, search?: string) =>
     getLibrary().listTracksPage(sourceId, offset, limit, search)
 )
+ipcMain.handle(IPC_CHANNELS.trackGetDetail, (_event, id: string) => getLibrary().getTrackDetail(id))
 
 ipcMain.handle(IPC_CHANNELS.openLocalTracks, async (): Promise<Track[]> => {
   const options: OpenDialogOptions = {
@@ -185,9 +196,12 @@ app.whenReady().then(() => {
     if (!source) return new Response('Not found', { status: 404 })
     if (source.kind === 'baidu') return baiduService.stream(source.path, request)
 
+    const headers = new Headers()
+    const range = request.headers.get('Range')
+    if (range) headers.set('Range', range)
     return net.fetch(pathToFileURL(source.path).toString(), {
       method: request.method,
-      headers: request.headers
+      headers
     })
   })
 

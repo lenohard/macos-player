@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BaiduAuthStatus,
   CloudEntry,
   LibraryRootInfo,
   LibrarySource,
   PlaylistSummary,
+  RepeatMode,
   SyncProgress,
   Track
 } from '@shared/ipc'
 import PlayerBar from './PlayerBar'
+import SearchField from './SearchField'
 
 const sourceIcon: Record<LibrarySource['type'], string> = {
   local: '♫',
@@ -67,9 +69,21 @@ function shuffleOrder(length: number, currentIndex: number): number[] {
   return order
 }
 
+function matchesTrackQuery(track: Track, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  return (
+    track.title.toLowerCase().includes(q) ||
+    (track.artist?.toLowerCase().includes(q) ?? false)
+  )
+}
+
 type MainView =
   | { kind: 'source'; sourceId: string }
   | { kind: 'playlist'; playlistId: string }
+  | { kind: 'queue' }
+
+type BaiduPanel = 'browse' | 'index'
 
 export default function App() {
   const [sources, setSources] = useState<LibrarySource[]>([])
@@ -78,10 +92,16 @@ export default function App() {
   const [libraryTracks, setLibraryTracks] = useState<Track[]>([])
   const [libraryTotal, setLibraryTotal] = useState(0)
   const [libraryOffset, setLibraryOffset] = useState(0)
+  const [librarySearch, setLibrarySearch] = useState('')
+  const [playlistSearch, setPlaylistSearch] = useState('')
+  const [playlistTracks, setPlaylistTracks] = useState<Track[]>([])
   const [tracks, setTracks] = useState<Track[]>([])
   const [currentIndex, setCurrentIndex] = useState(-1)
   const [shuffle, setShuffle] = useState(false)
+  const [repeatMode, setRepeatMode] = useState<RepeatMode>('off')
   const [playOrder, setPlayOrder] = useState<number[]>([])
+  const [temporaryTrack, setTemporaryTrack] = useState<Track | null>(null)
+  const [queueHydrated, setQueueHydrated] = useState(false)
   const [isChoosing, setIsChoosing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [baiduStatus, setBaiduStatus] = useState<BaiduAuthStatus | null>(null)
@@ -93,6 +113,8 @@ export default function App() {
   const [playlists, setPlaylists] = useState<PlaylistSummary[]>([])
   const [newPlaylistName, setNewPlaylistName] = useState('')
   const [importPlaylistName, setImportPlaylistName] = useState('')
+  const [baiduPanel, setBaiduPanel] = useState<BaiduPanel>('browse')
+  const queueRowRef = useRef<HTMLButtonElement | null>(null)
 
   const activeSourceId = mainView.kind === 'source' ? mainView.sourceId : 'baidu'
   const activePlaylistId = mainView.kind === 'playlist' ? mainView.playlistId : null
@@ -105,19 +127,32 @@ export default function App() {
     }
   }, [])
 
-  const loadLibraryPage = useCallback(async (offset = 0): Promise<void> => {
-    const page = await window.api.listTracksPage('baidu', offset, PAGE_SIZE)
+  const loadLibraryPage = useCallback(async (offset = 0, search?: string): Promise<void> => {
+    const query = (search ?? librarySearch).trim()
+    const page = await window.api.listTracksPage(
+      'baidu',
+      offset,
+      PAGE_SIZE,
+      query || undefined
+    )
     setLibraryTracks(page.tracks)
     setLibraryTotal(page.total)
     setLibraryOffset(page.offset)
-  }, [])
+  }, [librarySearch])
 
-  const loadPlaylistTracks = useCallback(async (playlistId: string): Promise<void> => {
-    const playlistTracks = await window.api.playlistListTracks(playlistId)
-    setTracks(playlistTracks)
-    setCurrentIndex(playlistTracks.length > 0 ? 0 : -1)
-    setPlayOrder(shuffleOrder(playlistTracks.length, 0))
-  }, [])
+  const runLibrarySearch = useCallback(
+    (query: string): void => {
+      setLibraryOffset(0)
+      void loadLibraryPage(0, query)
+    },
+    [loadLibraryPage]
+  )
+
+  async function loadPlaylistTracks(playlistId: string): Promise<void> {
+    const nextTracks = await window.api.playlistListTracks(playlistId)
+    setPlaylistTracks(nextTracks)
+    replaceQueueAndPlay(nextTracks)
+  }
 
   useEffect(() => {
     window.api.getSources().then(setSources).catch(() => setError('无法载入音乐来源'))
@@ -138,13 +173,46 @@ export default function App() {
   }, [loadLibraryPage, refreshPlaylists])
 
   useEffect(() => {
+    void window.api.queueLoad()
+      .then(state => {
+        if (state) {
+          setTracks(state.tracks)
+          setCurrentIndex(state.currentIndex)
+          setShuffle(state.shuffle)
+          setRepeatMode(state.repeatMode)
+          setPlayOrder(state.playOrder)
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => setQueueHydrated(true))
+  }, [])
+
+  useEffect(() => {
     setPlayOrder(previous => {
       if (tracks.length === 0) return []
       if (!shuffle) return Array.from({ length: tracks.length }, (_, index) => index)
-      if (previous.length === tracks.length) return previous
+      const isValid =
+        previous.length === tracks.length &&
+        new Set(previous).size === tracks.length &&
+        previous.every(value => Number.isInteger(value) && value >= 0 && value < tracks.length)
+      if (isValid) return previous
       return shuffleOrder(tracks.length, currentIndex)
     })
   }, [tracks.length, shuffle, currentIndex])
+
+  useEffect(() => {
+    if (!queueHydrated) return
+    const timer = window.setTimeout(() => {
+      void window.api.queueSave({ tracks, currentIndex, shuffle, repeatMode, playOrder })
+    }, 400)
+    return () => window.clearTimeout(timer)
+  }, [tracks, currentIndex, shuffle, repeatMode, playOrder, queueHydrated])
+
+  useEffect(() => {
+    if (mainView.kind === 'queue' && !temporaryTrack) {
+      queueRowRef.current?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [mainView.kind, currentIndex, temporaryTrack, tracks.length])
 
   const activeSource = useMemo(
     () => sources.find(source => source.id === activeSourceId),
@@ -158,15 +226,39 @@ export default function App() {
     () => baiduEntries.filter(entry => entry.isDirectory || isAudioFile(entry.name)),
     [baiduEntries]
   )
+  const visiblePlaylistRows = useMemo(
+    () =>
+      playlistTracks
+        .map((track, index) => ({ track, index }))
+        .filter(({ track }) => matchesTrackQuery(track, playlistSearch)),
+    [playlistTracks, playlistSearch]
+  )
 
-  function playAtIndex(index: number, queue = tracks): void {
-    if (index < 0 || index >= queue.length) return
+  useEffect(() => {
+    setPlaylistSearch('')
+  }, [activePlaylistId])
+
+  function replaceQueueAndPlay(queue: Track[]): void {
+    setTemporaryTrack(null)
     setTracks(queue)
+    setShuffle(false)
+    setCurrentIndex(queue.length > 0 ? 0 : -1)
+    setPlayOrder(Array.from({ length: queue.length }, (_, index) => index))
+  }
+
+  function playQueueIndex(index: number): void {
+    if (index < 0 || index >= tracks.length) return
+    setTemporaryTrack(null)
     setCurrentIndex(index)
-    if (shuffle) setPlayOrder(shuffleOrder(queue.length, index))
+    if (shuffle) setPlayOrder(shuffleOrder(tracks.length, index))
+  }
+
+  function playTemporary(track: Track): void {
+    setTemporaryTrack(track)
   }
 
   function playNext(): void {
+    if (temporaryTrack) setTemporaryTrack(null)
     if (tracks.length === 0 || currentIndex < 0) return
     const order = shuffle ? playOrder : Array.from({ length: tracks.length }, (_, index) => index)
     const position = order.indexOf(currentIndex)
@@ -174,17 +266,56 @@ export default function App() {
       setCurrentIndex(order[position + 1])
       return
     }
-    if (shuffle && order.length > 1) {
-      setCurrentIndex(order[0])
-    }
+    if (repeatMode === 'all' && order.length > 0) setCurrentIndex(order[0])
   }
 
   function playPrevious(): void {
+    if (temporaryTrack) setTemporaryTrack(null)
     if (tracks.length === 0 || currentIndex < 0) return
     const order = shuffle ? playOrder : Array.from({ length: tracks.length }, (_, index) => index)
     const position = order.indexOf(currentIndex)
-    if (position > 0) {
-      setCurrentIndex(order[position - 1])
+    if (position > 0) setCurrentIndex(order[position - 1])
+  }
+
+  function handleShuffleChange(enabled: boolean): void {
+    setShuffle(enabled)
+    if (tracks.length === 0) return
+    setPlayOrder(
+      enabled
+        ? shuffleOrder(tracks.length, currentIndex)
+        : Array.from({ length: tracks.length }, (_, index) => index)
+    )
+  }
+
+  function handleTemporaryEnded(): void {
+    setTemporaryTrack(null)
+  }
+
+  function cycleRepeatMode(): void {
+    setRepeatMode(mode => mode === 'off' ? 'all' : mode === 'all' ? 'one' : 'off')
+  }
+
+  async function playLibraryTrack(pageLocalIndex: number): Promise<void> {
+    if (pageLocalIndex < 0 || pageLocalIndex >= libraryTracks.length) return
+    const query = librarySearch.trim()
+    const cap = Math.min(libraryTotal, 10_000)
+    if (cap === 0) {
+      const track = libraryTracks[pageLocalIndex]
+      if (track) playTemporary(track)
+      return
+    }
+    try {
+      const page = await window.api.listTracksPage('baidu', 0, cap, query || undefined)
+      const globalIndex = libraryOffset + pageLocalIndex
+      if (globalIndex < page.tracks.length) {
+        playTemporary(page.tracks[globalIndex])
+      } else {
+        const track = libraryTracks[pageLocalIndex]
+        if (track) playTemporary(track)
+      }
+    } catch {
+      const track = libraryTracks[pageLocalIndex]
+      if (track) playTemporary(track)
     }
   }
 
@@ -194,7 +325,7 @@ export default function App() {
     try {
       const selected = await window.api.openLocalTracks()
       setLocalTracks(selected)
-      if (selected.length > 0) playAtIndex(0, selected)
+      if (selected.length > 0) replaceQueueAndPlay(selected)
     } catch (reason) {
       setError(messageFrom(reason, '无法打开所选音乐，请重试'))
     } finally {
@@ -298,7 +429,7 @@ export default function App() {
     setError(null)
     try {
       const track = await window.api.baiduCreateTrack(entry)
-      playAtIndex(0, [track])
+      playTemporary(track)
     } catch (reason) {
       setError(messageFrom(reason, '无法播放该百度网盘音频'))
     } finally {
@@ -321,7 +452,7 @@ export default function App() {
   }
 
   async function addCurrentTrackToPlaylist(playlistId: string): Promise<void> {
-    const track = tracks[currentIndex]
+    const track = temporaryTrack ?? tracks[currentIndex]
     if (!track) return
     try {
       await window.api.playlistAddTrack(playlistId, track.id)
@@ -341,7 +472,8 @@ export default function App() {
   const isLocal = mainView.kind === 'source' && activeSourceId === 'local'
   const isBaidu = mainView.kind === 'source' && activeSourceId === 'baidu'
   const isPlaylistView = mainView.kind === 'playlist'
-  const currentTrackId = tracks[currentIndex]?.id ?? null
+  const currentTrack = temporaryTrack ?? tracks[currentIndex]
+  const currentTrackId = currentTrack?.id ?? null
 
   return (
     <div className="app-shell">
@@ -369,6 +501,18 @@ export default function App() {
           ))}
         </nav>
 
+        <p className="sidebar-label">播放</p>
+        <nav className="playlist-nav" aria-label="当前播放列表">
+          <button
+            className={`source-button ${mainView.kind === 'queue' ? 'active' : ''}`}
+            onClick={() => setMainView({ kind: 'queue' })}
+          >
+            <span className="source-icon source-local" aria-hidden="true">≡</span>
+            <span>播放列表</span>
+            <span className="source-status">{tracks.length}</span>
+          </button>
+        </nav>
+
         <p className="sidebar-label">歌单</p>
         <div className="playlist-create-row">
           <input
@@ -394,7 +538,7 @@ export default function App() {
                 void loadPlaylistTracks(playlist.id)
               }}
             >
-              <span className="source-icon source-local" aria-hidden="true">≡</span>
+              <span className="source-icon source-local" aria-hidden="true">♫</span>
               <span>{playlist.name}</span>
               <span className="source-status">{playlist.trackCount}</span>
             </button>
@@ -410,8 +554,8 @@ export default function App() {
       <main className="main-content">
         <header className="content-header">
           <div>
-            <p className="eyebrow">{isPlaylistView ? '歌单' : '音乐库'}</p>
-            <h1>{isPlaylistView ? activePlaylist?.name ?? '歌单' : activeSource?.name ?? '音乐'}</h1>
+            <p className="eyebrow">{mainView.kind === 'queue' ? '播放列表' : isPlaylistView ? '歌单' : '音乐库'}</p>
+            <h1>{mainView.kind === 'queue' ? '当前播放' : isPlaylistView ? activePlaylist?.name ?? '歌单' : activeSource?.name ?? '音乐'}</h1>
           </div>
           {isLocal && (
             <button className="primary-button" onClick={() => void chooseLocalTracks()} disabled={isChoosing}>
@@ -434,27 +578,88 @@ export default function App() {
         )}
 
         <section className="library-content">
-          {isPlaylistView && (
-            <div className="track-table" role="table" aria-label="歌单曲目">
-              <div className="track-table-header" role="row">
-                <span>#</span><span>标题</span><span>来源</span>
+          {mainView.kind === 'queue' && (
+            <div className="library-panel playlist-panel">
+              <div className="panel-header-row">
+                <p className="panel-title">{tracks.length} 首 · 当前播放列表</p>
+                <div className="queue-controls">
+                  <button
+                    className={`quiet-button ${shuffle ? 'active-toggle' : ''}`}
+                    onClick={() => handleShuffleChange(!shuffle)}
+                    disabled={tracks.length < 2}
+                  >
+                    {shuffle ? '随机播放' : '顺序播放'}
+                  </button>
+                  <button className="quiet-button" onClick={cycleRepeatMode} disabled={tracks.length === 0}>
+                    {repeatMode === 'off' ? '不循环' : repeatMode === 'all' ? '列表循环' : '单曲循环'}
+                  </button>
+                </div>
               </div>
-              {tracks.map((track, index) => (
-                <button
-                  key={track.id}
-                  className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
-                  onClick={() => playAtIndex(index)}
-                  role="row"
-                >
-                  <span className="track-number">{track.id === currentTrackId ? '▶' : index + 1}</span>
-                  <span className="track-name-cell">
-                    <span className="track-name">{track.title}</span>
-                    <span className="track-artist">{track.sourceId === 'baidu' ? '百度网盘' : '本地'}</span>
-                  </span>
-                  <span className="track-source">{track.sourceId}</span>
-                </button>
-              ))}
-              {tracks.length === 0 && <div className="directory-empty">歌单中还没有曲目。</div>}
+              <div className="track-table" role="table" aria-label="当前播放列表">
+                <div className="track-table-header" role="row">
+                  <span>#</span><span>标题</span><span>来源</span>
+                </div>
+                {tracks.map((track, index) => (
+                  <button
+                    key={`${track.id}-${index}`}
+                    ref={index === currentIndex ? queueRowRef : undefined}
+                    className={`track-row ${index === currentIndex ? 'selected' : ''}`}
+                    onClick={() => playQueueIndex(index)}
+                    role="row"
+                  >
+                    <span className="track-number">{index === currentIndex && !temporaryTrack ? '▶' : index + 1}</span>
+                    <span className="track-name-cell">
+                      <span className="track-name">{track.title}</span>
+                      <span className="track-artist">{track.artist ?? (track.sourceId === 'baidu' ? '百度网盘' : '本地')}</span>
+                    </span>
+                    <span className="track-source">{track.sourceId}</span>
+                  </button>
+                ))}
+                {tracks.length === 0 && <div className="directory-empty">播放列表还是空的。</div>}
+              </div>
+            </div>
+          )}
+
+          {isPlaylistView && (
+            <div className="library-panel playlist-panel">
+              <div className="panel-header-row">
+                <p className="panel-title">
+                  {playlistTracks.length} 首
+                  {playlistSearch.trim() && visiblePlaylistRows.length !== playlistTracks.length
+                    ? ` · 显示 ${visiblePlaylistRows.length}`
+                    : ''}
+                </p>
+                <SearchField
+                  value={playlistSearch}
+                  onChange={setPlaylistSearch}
+                  placeholder="搜索歌单内曲目…"
+                  aria-label="搜索歌单"
+                />
+              </div>
+              <div className="track-table" role="table" aria-label="歌单曲目">
+                <div className="track-table-header" role="row">
+                  <span>#</span><span>标题</span><span>来源</span>
+                </div>
+                {visiblePlaylistRows.map(({ track, index }) => (
+                  <button
+                    key={track.id}
+                    className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
+                    onClick={() => playTemporary(track)}
+                    role="row"
+                  >
+                    <span className="track-number">{track.id === currentTrackId ? '▶' : index + 1}</span>
+                    <span className="track-name-cell">
+                      <span className="track-name">{track.title}</span>
+                      <span className="track-artist">{track.sourceId === 'baidu' ? '百度网盘' : '本地'}</span>
+                    </span>
+                    <span className="track-source">{track.sourceId}</span>
+                  </button>
+                ))}
+                {playlistTracks.length === 0 && <div className="directory-empty">歌单中还没有曲目。</div>}
+                {playlistTracks.length > 0 && visiblePlaylistRows.length === 0 && (
+                  <div className="directory-empty">没有匹配的曲目。</div>
+                )}
+              </div>
             </div>
           )}
 
@@ -467,7 +672,7 @@ export default function App() {
                 <button
                   key={track.id}
                   className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
-                  onClick={() => playAtIndex(index, localTracks)}
+                  onClick={() => playTemporary(track)}
                   role="row"
                 >
                   <span className="track-number">{track.id === currentTrackId ? '▶' : index + 1}</span>
@@ -513,125 +718,155 @@ export default function App() {
 
           {isBaidu && baiduStatus?.connected && (
             <div className="cloud-browser">
-              <div className="import-panel">
-                <label className="import-label">
-                  导入歌单名称
-                  <input
-                    type="text"
-                    value={importPlaylistName}
-                    onChange={event => setImportPlaylistName(event.target.value)}
-                  />
-                </label>
+              <div className="content-tabs">
                 <button
-                  className="primary-button"
-                  onClick={() => void importCurrentDirectory()}
-                  disabled={isBaiduBusy}
+                  className={`segment-tab ${baiduPanel === 'browse' ? 'active' : ''}`}
+                  onClick={() => setBaiduPanel('browse')}
                 >
-                  {isBaiduBusy ? '同步中…' : '导入当前目录（递归）'}
+                  浏览
+                </button>
+                <button
+                  className={`segment-tab ${baiduPanel === 'index' ? 'active' : ''}`}
+                  onClick={() => setBaiduPanel('index')}
+                >
+                  音乐库
                 </button>
               </div>
 
-              {baiduRoots.length > 0 && (
-                <div className="roots-panel">
-                  <p className="panel-title">已导入目录</p>
-                  {baiduRoots.map(root => (
-                    <div key={root.id} className="root-row">
-                      <button
-                        className="quiet-button"
-                        onClick={() => {
-                          if (root.playlistId) {
-                            setMainView({ kind: 'playlist', playlistId: root.playlistId })
-                            void loadPlaylistTracks(root.playlistId)
-                          }
-                        }}
-                      >
-                        {root.rootPath}
-                      </button>
-                      <button className="quiet-button" onClick={() => void resyncRoot(root.rootPath)} disabled={isBaiduBusy}>
-                        更新
-                      </button>
+              {baiduPanel === 'browse' ? (
+                <>
+                  <div className="import-panel">
+                    <label className="import-label">
+                      导入歌单名称
+                      <input
+                        type="text"
+                        value={importPlaylistName}
+                        onChange={event => setImportPlaylistName(event.target.value)}
+                      />
+                    </label>
+                    <button
+                      className="primary-button"
+                      onClick={() => void importCurrentDirectory()}
+                      disabled={isBaiduBusy}
+                    >
+                      {isBaiduBusy ? '同步中…' : '导入当前目录（递归）'}
+                    </button>
+                  </div>
+
+                  <div className="path-bar">
+                    <button
+                      className="quiet-button"
+                      onClick={() => void loadBaiduDirectory(parentPath(baiduPath))}
+                      disabled={isBaiduBusy || baiduPath === '/'}
+                    >
+                      ‹ 返回
+                    </button>
+                    <span title={baiduPath}>{baiduPath}</span>
+                    <button className="quiet-button" onClick={() => void loadBaiduDirectory(baiduPath)} disabled={isBaiduBusy}>
+                      {isBaiduBusy ? '载入中…' : '刷新目录'}
+                    </button>
+                  </div>
+                  <div className="track-table" role="table" aria-label="百度网盘浏览">
+                    <div className="track-table-header" role="row">
+                      <span>类型</span><span>名称</span><span>大小</span>
                     </div>
-                  ))}
-                </div>
+                    {visibleBaiduEntries.map(entry => (
+                      <button
+                        key={entry.id}
+                        className="track-row"
+                        onClick={() => void openBaiduEntry(entry)}
+                        disabled={isBaiduBusy}
+                        role="row"
+                      >
+                        <span className="track-number">{entry.isDirectory ? '▸' : '♫'}</span>
+                        <span className="track-name-cell">
+                          <span className="track-name">{entry.name}</span>
+                          <span className="track-artist">{entry.isDirectory ? '文件夹' : '百度网盘音频'}</span>
+                        </span>
+                        <span className="track-source">{entry.isDirectory ? '—' : formatSize(entry.size)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  {baiduRoots.length > 0 && (
+                    <div className="roots-panel">
+                      <p className="panel-title">已导入目录</p>
+                      {baiduRoots.map(root => (
+                        <div key={root.id} className="root-row">
+                          <button
+                            className="quiet-button"
+                            onClick={() => {
+                              if (root.playlistId) {
+                                setMainView({ kind: 'playlist', playlistId: root.playlistId })
+                                void loadPlaylistTracks(root.playlistId)
+                              }
+                            }}
+                          >
+                            {root.rootPath}
+                          </button>
+                          <button className="quiet-button" onClick={() => void resyncRoot(root.rootPath)} disabled={isBaiduBusy}>
+                            更新
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="library-panel">
+                    <div className="panel-header-row">
+                      <p className="panel-title">本地索引（{libraryTotal} 首）</p>
+                      <SearchField
+                        value={librarySearch}
+                        onChange={setLibrarySearch}
+                        placeholder="搜索标题…"
+                        aria-label="搜索本地索引"
+                        disabled={isBaiduBusy}
+                        debounceMs={350}
+                        onDebouncedChange={runLibrarySearch}
+                      />
+                      <div className="pager">
+                        <button
+                          className="quiet-button"
+                          disabled={libraryOffset <= 0 || isBaiduBusy}
+                          onClick={() => void loadLibraryPage(Math.max(0, libraryOffset - PAGE_SIZE))}
+                        >
+                          上一页
+                        </button>
+                        <span>{libraryOffset + 1}-{Math.min(libraryOffset + PAGE_SIZE, libraryTotal)}</span>
+                        <button
+                          className="quiet-button"
+                          disabled={libraryOffset + PAGE_SIZE >= libraryTotal || isBaiduBusy}
+                          onClick={() => void loadLibraryPage(libraryOffset + PAGE_SIZE)}
+                        >
+                          下一页
+                        </button>
+                      </div>
+                    </div>
+                    <div className="track-table" role="table" aria-label="百度本地索引">
+                      <div className="track-table-header" role="row">
+                        <span>#</span><span>标题</span><span>来源</span>
+                      </div>
+                      {libraryTracks.map((track, index) => (
+                        <button
+                          key={track.id}
+                          className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
+                          onClick={() => void playLibraryTrack(index)}
+                          role="row"
+                        >
+                          <span className="track-number">{libraryOffset + index + 1}</span>
+                          <span className="track-name-cell">
+                            <span className="track-name">{track.title}</span>
+                            <span className="track-artist">百度网盘</span>
+                          </span>
+                          <span className="track-source">索引</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
               )}
-
-              <div className="library-panel">
-                <div className="panel-header-row">
-                  <p className="panel-title">本地索引（{libraryTotal} 首）</p>
-                  <div className="pager">
-                    <button
-                      className="quiet-button"
-                      disabled={libraryOffset <= 0 || isBaiduBusy}
-                      onClick={() => void loadLibraryPage(Math.max(0, libraryOffset - PAGE_SIZE))}
-                    >
-                      上一页
-                    </button>
-                    <span>{libraryOffset + 1}-{Math.min(libraryOffset + PAGE_SIZE, libraryTotal)}</span>
-                    <button
-                      className="quiet-button"
-                      disabled={libraryOffset + PAGE_SIZE >= libraryTotal || isBaiduBusy}
-                      onClick={() => void loadLibraryPage(libraryOffset + PAGE_SIZE)}
-                    >
-                      下一页
-                    </button>
-                  </div>
-                </div>
-                <div className="track-table" role="table" aria-label="百度本地索引">
-                  <div className="track-table-header" role="row">
-                    <span>#</span><span>标题</span><span>来源</span>
-                  </div>
-                  {libraryTracks.map((track, index) => (
-                    <button
-                      key={track.id}
-                      className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
-                      onClick={() => playAtIndex(index, libraryTracks)}
-                      role="row"
-                    >
-                      <span className="track-number">{libraryOffset + index + 1}</span>
-                      <span className="track-name-cell">
-                        <span className="track-name">{track.title}</span>
-                        <span className="track-artist">百度网盘</span>
-                      </span>
-                      <span className="track-source">索引</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="path-bar">
-                <button
-                  className="quiet-button"
-                  onClick={() => void loadBaiduDirectory(parentPath(baiduPath))}
-                  disabled={isBaiduBusy || baiduPath === '/'}
-                >
-                  ‹ 返回
-                </button>
-                <span title={baiduPath}>{baiduPath}</span>
-                <button className="quiet-button" onClick={() => void loadBaiduDirectory(baiduPath)} disabled={isBaiduBusy}>
-                  {isBaiduBusy ? '载入中…' : '刷新目录'}
-                </button>
-              </div>
-              <div className="track-table" role="table" aria-label="百度网盘浏览">
-                <div className="track-table-header" role="row">
-                  <span>类型</span><span>名称</span><span>大小</span>
-                </div>
-                {visibleBaiduEntries.map(entry => (
-                  <button
-                    key={entry.id}
-                    className="track-row"
-                    onClick={() => void openBaiduEntry(entry)}
-                    disabled={isBaiduBusy}
-                    role="row"
-                  >
-                    <span className="track-number">{entry.isDirectory ? '▸' : '♫'}</span>
-                    <span className="track-name-cell">
-                      <span className="track-name">{entry.name}</span>
-                      <span className="track-artist">{entry.isDirectory ? '文件夹' : '百度网盘音频'}</span>
-                    </span>
-                    <span className="track-source">{entry.isDirectory ? '—' : formatSize(entry.size)}</span>
-                  </button>
-                ))}
-              </div>
             </div>
           )}
 
@@ -648,9 +883,14 @@ export default function App() {
       <PlayerBar
         tracks={tracks}
         currentIndex={currentIndex}
+        currentTrack={currentTrack}
+        temporaryTrack={temporaryTrack !== null}
         shuffle={shuffle}
+        repeatMode={repeatMode}
         playlists={playlists}
-        onShuffleChange={setShuffle}
+        onShuffleChange={handleShuffleChange}
+        onRepeatChange={cycleRepeatMode}
+        onTemporaryEnded={handleTemporaryEnded}
         onNext={playNext}
         onPrevious={playPrevious}
         onAddToPlaylist={playlistId => void addCurrentTrackToPlaylist(playlistId)}
