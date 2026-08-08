@@ -138,6 +138,8 @@ ipcMain.handle(IPC_CHANNELS.openLocalTracks, async (): Promise<Track[]> => {
 ipcMain.handle(IPC_CHANNELS.webdavGetStatus, async () => {
   try { return await webdavService.testConnection() } catch { return webdavService.getStatus() }
 })
+ipcMain.handle(IPC_CHANNELS.webdavDisconnect, () => webdavService.disconnect())
+
 ipcMain.handle(IPC_CHANNELS.webdavSaveConfig, async (_event, config) => {
   webdavService.saveConfig(config)
   try { return await webdavService.testConnection() } catch { return webdavService.getStatus() }

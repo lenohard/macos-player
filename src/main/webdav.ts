@@ -18,8 +18,18 @@ function baseUrl(): string {
   const value = load()?.url.trim() || ''
   return value.replace(/\/+$/, '')
 }
+function basePath(): string {
+  try { return new URL(`${baseUrl()}/`).pathname.replace(/\/+$/, '') || '/' } catch { return '/' }
+}
 function hrefPath(href: string): string {
-  try { return decodeURIComponent(new URL(href, `${baseUrl()}/`).pathname) } catch { return href }
+  try {
+    const pathname = decodeURIComponent(new URL(href, `${baseUrl()}/`).pathname)
+    const prefix = basePath()
+    if (prefix !== '/' && (pathname === prefix || pathname.startsWith(`${prefix}/`))) {
+      return pathname.slice(prefix.length) || '/'
+    }
+    return pathname
+  } catch { return href }
 }
 function joinPath(path: string): string {
   const clean = path.startsWith('/') ? path : `/${path}`
@@ -39,12 +49,20 @@ export class WebDAVService {
     const c = load(); return { configured: !!c?.url, connected: false, url: c?.url || '', username: c?.username || '' }
   }
   saveConfig(next: WebDAVConfig): WebDAVStatus {
+    const url = next.url.trim()
     let parsed: URL
-    try { parsed = new URL(next.url) } catch { throw new Error('WebDAV URL 无效。') }
+    try { parsed = new URL(url) } catch { throw new Error('WebDAV URL 无效。') }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('WebDAV URL 必须使用 HTTP(S)。')
-    config = { url: next.url.trim(), username: next.username, password: next.password }
+    const previous = load()
+    const password = next.password || previous?.password || ''
+    config = { url, username: next.username.trim(), password }
     const text = JSON.stringify(config); const raw = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(text) : Buffer.from(text)
     mkdirSync(join(app.getPath('userData'), 'credentials'), { recursive: true }); writeFileSync(configPath(), raw)
+    return this.getStatus()
+  }
+  disconnect(): WebDAVStatus {
+    config = null
+    try { writeFileSync(configPath(), Buffer.from('')) } catch { /* config may not exist yet */ }
     return this.getStatus()
   }
   async request(path: string, method: string, extra?: HeadersInit): Promise<Response> {

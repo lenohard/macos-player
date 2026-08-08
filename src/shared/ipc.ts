@@ -17,6 +17,7 @@ export const IPC_CHANNELS = {
   baiduResyncDirectory: 'baidu:resyncDirectory',
   baiduListRoots: 'baidu:listRoots',
   webdavGetStatus: 'webdav:getStatus',
+  webdavDisconnect: 'webdav:disconnect',
   webdavSaveConfig: 'webdav:saveConfig',
   webdavListDirectory: 'webdav:listDirectory',
   webdavCreateTrack: 'webdav:createTrack',
@@ -181,6 +182,7 @@ export interface IPCApi {
   baiduResyncDirectory(rootPath: string): Promise<BaiduImportResult>
   baiduListRoots(): Promise<LibraryRootInfo[]>
   webdavGetStatus(): Promise<WebDAVStatus>
+  webdavDisconnect(): Promise<WebDAVStatus>
   webdavSaveConfig(config: WebDAVConfig): Promise<WebDAVStatus>
   webdavListDirectory(path: string): Promise<CloudEntry[]>
   webdavCreateTrack(entry: CloudEntry): Promise<Track>

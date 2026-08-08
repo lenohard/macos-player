@@ -45,6 +45,7 @@ const api: IPCApi = {
     ipcRenderer.invoke(IPC_CHANNELS.baiduResyncDirectory, rootPath),
   baiduListRoots: (): Promise<LibraryRootInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.baiduListRoots),
   webdavGetStatus: (): Promise<WebDAVStatus> => ipcRenderer.invoke(IPC_CHANNELS.webdavGetStatus),
+  webdavDisconnect: (): Promise<WebDAVStatus> => ipcRenderer.invoke(IPC_CHANNELS.webdavDisconnect),
   webdavSaveConfig: (config: WebDAVConfig): Promise<WebDAVStatus> => ipcRenderer.invoke(IPC_CHANNELS.webdavSaveConfig, config),
   webdavListDirectory: (path: string): Promise<CloudEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.webdavListDirectory, path),
   webdavCreateTrack: (entry: CloudEntry): Promise<Track> => ipcRenderer.invoke(IPC_CHANNELS.webdavCreateTrack, entry),

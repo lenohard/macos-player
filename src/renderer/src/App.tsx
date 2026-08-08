@@ -146,6 +146,7 @@ export default function App() {
   const [webdavRoots, setWebdavRoots] = useState<LibraryRootInfo[]>([])
   const [isWebdavBusy, setIsWebdavBusy] = useState(false)
   const [webdavPanel, setWebdavPanel] = useState<CloudPanel>('browse')
+  const [webdavEditing, setWebdavEditing] = useState(false)
   const [webdavConfigForm, setWebdavConfigForm] = useState({ url: '', username: '', password: '' })
   const [webdavImportName, setWebdavImportName] = useState('')
   const queueRowRef = useRef<HTMLButtonElement | null>(null)
@@ -246,6 +247,7 @@ export default function App() {
     window.api.webdavGetStatus()
       .then(status => {
         setWebdavStatus(status)
+        setWebdavConfigForm(form => ({ ...form, url: status.url, username: status.username }))
         if (status.connected) {
           void loadWebdavDirectory('/')
           void window.api.webdavListRoots().then(setWebdavRoots)
@@ -550,6 +552,25 @@ export default function App() {
     }
   }
 
+  async function disconnectWebdav(): Promise<void> {
+    setIsWebdavBusy(true)
+    setError(null)
+    try {
+      setWebdavStatus(await window.api.webdavDisconnect())
+      setWebdavEntries([])
+      setWebdavPath('/')
+      setWebdavRoots([])
+      setWebdavEditing(false)
+      setWebdavConfigForm({ url: '', username: '', password: '' })
+      setLibraryTracks([])
+      setLibraryTotal(0)
+    } catch (reason) {
+      setError(messageFrom(reason, '断开 WebDAV 失败'))
+    } finally {
+      setIsWebdavBusy(false)
+    }
+  }
+
   async function saveWebdavConfig(): Promise<void> {
     setIsWebdavBusy(true)
     setError(null)
@@ -561,6 +582,7 @@ export default function App() {
       })
       setWebdavStatus(status)
       if (status.connected) {
+        setWebdavEditing(false)
         await loadWebdavDirectory('/')
         setWebdavRoots(await window.api.webdavListRoots())
         await loadLibraryPage('quark', 0)
@@ -788,6 +810,23 @@ export default function App() {
           )}
           {isBaidu && baiduStatus?.connected && (
             <button className="quiet-button" onClick={() => void logoutBaidu()} disabled={isBaiduBusy}>退出登录</button>
+          )}
+          {isQuark && webdavStatus?.connected && !webdavEditing && (
+            <div className="header-actions">
+              <button
+                className="quiet-button"
+                onClick={() => {
+                  setWebdavConfigForm(form => ({ ...form, url: webdavStatus.url, username: webdavStatus.username, password: '' }))
+                  setWebdavEditing(true)
+                }}
+                disabled={isWebdavBusy}
+              >
+                修改 WebDAV
+              </button>
+              <button className="quiet-button" onClick={() => void disconnectWebdav()} disabled={isWebdavBusy}>
+                断开连接
+              </button>
+            </div>
           )}
         </header>
 
@@ -1143,11 +1182,11 @@ export default function App() {
             </div>
           )}
 
-          {isQuark && !webdavStatus?.connected && (
-            <div className="empty-state">
+          {isQuark && (!webdavStatus?.connected || webdavEditing) && (
+            <div className={`empty-state ${webdavEditing ? 'webdav-edit-state' : ''}`}>
               <div className="empty-art" aria-hidden="true"><span>W</span></div>
-              <h2>连接 WebDAV 网盘</h2>
-              <p>输入支持 WebDAV 的服务器地址与账号，即可浏览、导入并播放其中的音乐。</p>
+              <h2>{webdavEditing ? '修改 WebDAV 连接' : '连接 WebDAV 网盘'}</h2>
+              <p>{webdavEditing ? '修改地址或账号后重新连接；密码留空会保留当前密码。' : '输入支持 WebDAV 的服务器地址与账号，即可浏览、导入并播放其中的音乐。'}</p>
               <form
                 className="webdav-form"
                 onSubmit={event => {
@@ -1183,14 +1222,21 @@ export default function App() {
                     autoComplete="current-password"
                   />
                 </label>
-                <button className="primary-button" type="submit" disabled={isWebdavBusy || !webdavConfigForm.url.trim()}>
-                  {isWebdavBusy ? '连接中…' : '保存并连接'}
-                </button>
+                <div className="webdav-form-actions">
+                  <button className="primary-button" type="submit" disabled={isWebdavBusy || !webdavConfigForm.url.trim()}>
+                    {isWebdavBusy ? '连接中…' : '保存并连接'}
+                  </button>
+                  {webdavEditing && (
+                    <button className="quiet-button" type="button" onClick={() => setWebdavEditing(false)} disabled={isWebdavBusy}>
+                      取消
+                    </button>
+                  )}
+                </div>
               </form>
             </div>
           )}
 
-          {isQuark && webdavStatus?.connected && (
+          {isQuark && webdavStatus?.connected && !webdavEditing && (
             <div className="cloud-browser">
               <div className="content-tabs">
                 <button
