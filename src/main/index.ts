@@ -156,6 +156,7 @@ ipcMain.handle(IPC_CHANNELS.webdavListRoots, () => getLibrary().listLibraryRoots
 
 ipcMain.handle(IPC_CHANNELS.baiduLogin, () => baiduService.login(mainWindow))
 ipcMain.handle(IPC_CHANNELS.baiduLogout, () => baiduService.logout())
+ipcMain.handle(IPC_CHANNELS.baiduGetStatus, () => baiduService.getStatus())
 ipcMain.handle(
   IPC_CHANNELS.baiduListDirectory,
   (_event, path: string) => baiduService.listDirectory(path)

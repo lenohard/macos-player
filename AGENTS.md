@@ -135,6 +135,7 @@ Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by
 - **`UpdateSnapshot`**：对 renderer 始终带 `appVersion`、`enabled`；内部 patch 用不含这两字段的 state，避免重复字段不一致。
 - **`package.json`**：`repository` 字段、`version` 与 git tag（如 `v0.0.2`）一致；发布前确认构建机有 **BAIDU_***（Vite `define` 打进 main bundle，不是运行时读 `.env`）。
 - **BAIDU define 注入坑**：注入逻辑必须用 `process.env[key]?.trim() || fileEnv[key]?.trim() || ''`——若环境变量是**空字符串**，`??` 不回退 .env 文件，产物会注入空值（现象：播放正常但 UI 显示「请先配置 Client ID」）。
+- **百度「请先配置」误判**：若 `IPC_CHANNELS.baiduGetStatus` 未在主进程 `ipcMain.handle` 注册，renderer 的 `baiduGetStatus()` 会 reject，`.catch()` 会把状态设成 `configured: false`，文案与真未配置相同；播放仍可用（token 在 safeStorage）。新增/改 IPC 时按 `src/shared/ipc.ts` → main → preload → renderer 全链路核对。
 - **本地**：`npm run dist`（不上传）；**发布**：`npm run release` 或 push `v*.*.*` tag 触发 `.github/workflows/release-mac.yml`（`GH_TOKEN` = `GITHUB_TOKEN`）。
 - **签名/公证（已配好）**：Developer ID 签名 + notarize 已打通。本地 keychain 有 `Developer ID Application: denghui wang (285P3M6846)`（p12 在 `~/.agents/skills/apple-cli-build/extra/corner-devid.p12`，密码 `corner2026`）；`electron-builder.yml` `mac.notarize: true`；CI 用 secrets：`CSC_LINK`（p12 base64）+ `CSC_KEY_PASSWORD` + `APPLE_API_KEY`/`APPLE_API_KEY_ID`/`APPLE_API_ISSUER`（见 apple-cli-build skill）。本地打包不设 API key env 时会跳过公证（正常）。
 - **electron-builder 默认把 GitHub Release 打成 draft**：`npm run release`（`--publish always`）成功后 Release 仍是 draft，而 electron-updater 不会提供 draft 更新 → 每次发版后需 `env -u GH_TOKEN gh release edit <tag> --draft=false`（GH_TOKEN 环境变量会遮蔽 gh，见全局 memory）。
