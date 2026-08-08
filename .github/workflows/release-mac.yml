@@ -29,4 +29,11 @@ jobs:
           BAIDU_CLIENT_SECRET: ${{ secrets.BAIDU_CLIENT_SECRET }}
           BAIDU_REDIRECT_URI: ${{ secrets.BAIDU_REDIRECT_URI }}
           BAIDU_SCOPE: ${{ secrets.BAIDU_SCOPE }}
+          # Developer ID signing (p12 exported from keychain)
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # Notarization via App Store Connect API key
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: npm run release

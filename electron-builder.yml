@@ -22,6 +22,7 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   hardenedRuntime: true
   gatekeeperAssess: false
+  notarize: true
   target:
     - target: dmg
     - target: zip

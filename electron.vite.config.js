@@ -7,7 +7,8 @@ module.exports = defineConfig(({ mode }) => {
   const fileEnv = loadEnv(mode, process.cwd(), '')
   const define = {}
   for (const key of defineVars) {
-    const value = process.env[key] ?? fileEnv[key] ?? ''
+    // 注意：process.env 里可能残留空字符串，?? 不会回退；用 || 确保空值回退到 .env 文件
+    const value = process.env[key]?.trim() || fileEnv[key]?.trim() || ''
     define[`process.env.${key}`] = JSON.stringify(value)
   }
 
