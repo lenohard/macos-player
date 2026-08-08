@@ -4,11 +4,13 @@ import type {
   CloudEntry,
   LibraryRootInfo,
   LibrarySource,
+  PlaybackQueueState,
   PlaylistSummary,
   RepeatMode,
   SyncProgress,
   Track,
-  UpdateSnapshot
+  UpdateSnapshot,
+  WebDAVStatus
 } from '@shared/ipc'
 import AboutPanel from './AboutPanel'
 import PlayerBar from './PlayerBar'
@@ -37,11 +39,11 @@ function parentPath(path: string): string {
   return separator <= 0 ? '/' : normalized.slice(0, separator)
 }
 
-function folderName(path: string): string {
-  if (path === '/') return '百度网盘根目录'
+function folderName(path: string, rootLabel = '百度网盘'): string {
+  if (path === '/') return `${rootLabel}根目录`
   const normalized = path.replace(/\/$/, '')
   const separator = normalized.lastIndexOf('/')
-  return separator < 0 ? normalized : normalized.slice(separator + 1) || '百度网盘'
+  return separator < 0 ? normalized : normalized.slice(separator + 1) || rootLabel
 }
 
 function formatSize(bytes: number): string {
@@ -98,7 +100,7 @@ type MainView =
   | { kind: 'about' }
   | { kind: 'trackDetail'; trackId: string; returnTo: MainView }
 
-type BaiduPanel = 'browse' | 'index'
+type CloudPanel = 'browse' | 'index'
 
 export default function App() {
   const [sources, setSources] = useState<LibrarySource[]>([])
@@ -119,6 +121,13 @@ export default function App() {
   const [detailTrack, setDetailTrack] = useState<Track | null>(null)
   const [queueHydrated, setQueueHydrated] = useState(false)
   const queuePersistenceReady = useRef(false)
+  const librarySearchRef = useRef('')
+  const cloudSourceRef = useRef<'baidu' | 'quark'>('baidu')
+  const libraryRequestSeq = useRef(0)
+  const playlistRequestSeq = useRef(0)
+  const baiduDirSeq = useRef(0)
+  const webdavDirSeq = useRef(0)
+  const queueSaveChain = useRef<Promise<void>>(Promise.resolve())
   const [isChoosing, setIsChoosing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [baiduStatus, setBaiduStatus] = useState<BaiduAuthStatus | null>(null)
@@ -130,7 +139,15 @@ export default function App() {
   const [playlists, setPlaylists] = useState<PlaylistSummary[]>([])
   const [newPlaylistName, setNewPlaylistName] = useState('')
   const [importPlaylistName, setImportPlaylistName] = useState('')
-  const [baiduPanel, setBaiduPanel] = useState<BaiduPanel>('browse')
+  const [baiduPanel, setBaiduPanel] = useState<CloudPanel>('browse')
+  const [webdavStatus, setWebdavStatus] = useState<WebDAVStatus | null>(null)
+  const [webdavEntries, setWebdavEntries] = useState<CloudEntry[]>([])
+  const [webdavPath, setWebdavPath] = useState('/')
+  const [webdavRoots, setWebdavRoots] = useState<LibraryRootInfo[]>([])
+  const [isWebdavBusy, setIsWebdavBusy] = useState(false)
+  const [webdavPanel, setWebdavPanel] = useState<CloudPanel>('browse')
+  const [webdavConfigForm, setWebdavConfigForm] = useState({ url: '', username: '', password: '' })
+  const [webdavImportName, setWebdavImportName] = useState('')
   const queueRowRef = useRef<HTMLButtonElement | null>(null)
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot>({
     appVersion: '…',
@@ -147,6 +164,10 @@ export default function App() {
   const activeSourceId = mainView.kind === 'source' ? mainView.sourceId : 'baidu'
   const activePlaylistId = mainView.kind === 'playlist' ? mainView.playlistId : null
 
+  useEffect(() => {
+    librarySearchRef.current = librarySearch
+  }, [librarySearch])
+
   const refreshPlaylists = useCallback(async (): Promise<void> => {
     try {
       setPlaylists(await window.api.playlistList())
@@ -155,29 +176,47 @@ export default function App() {
     }
   }, [])
 
-  const loadLibraryPage = useCallback(async (offset = 0, search?: string): Promise<void> => {
-    const query = (search ?? librarySearch).trim()
-    const page = await window.api.listTracksPage(
-      'baidu',
-      offset,
-      PAGE_SIZE,
-      query || undefined
-    )
-    setLibraryTracks(page.tracks)
-    setLibraryTotal(page.total)
-    setLibraryOffset(page.offset)
-  }, [librarySearch])
+  const loadLibraryPage = useCallback(async (sourceId: string, offset = 0, search?: string): Promise<void> => {
+    const seq = ++libraryRequestSeq.current
+    const query = (search ?? librarySearchRef.current).trim()
+    try {
+      const page = await window.api.listTracksPage(sourceId, offset, PAGE_SIZE, query || undefined)
+      if (seq !== libraryRequestSeq.current) return
+      setLibraryTracks(page.tracks)
+      setLibraryTotal(page.total)
+      setLibraryOffset(page.offset)
+    } catch {
+      if (seq === libraryRequestSeq.current) setError('无法载入音乐索引')
+    }
+  }, [])
 
   const runLibrarySearch = useCallback(
     (query: string): void => {
       setLibraryOffset(0)
-      void loadLibraryPage(0, query)
+      void loadLibraryPage(cloudSourceRef.current, 0, query)
     },
     [loadLibraryPage]
   )
 
+  useEffect(() => {
+    if (mainView.kind !== 'source') return
+    const next: 'baidu' | 'quark' = mainView.sourceId === 'quark' ? 'quark' : 'baidu'
+    if (next !== cloudSourceRef.current) {
+      cloudSourceRef.current = next
+      setLibraryOffset(0)
+      setLibrarySearch('')
+      void loadLibraryPage(next, 0, '')
+    }
+  }, [mainView, loadLibraryPage])
+
   async function refreshPlaylistTracks(playlistId: string): Promise<void> {
-    setPlaylistTracks(await window.api.playlistListTracks(playlistId))
+    const seq = ++playlistRequestSeq.current
+    try {
+      const tracks = await window.api.playlistListTracks(playlistId)
+      if (seq === playlistRequestSeq.current) setPlaylistTracks(tracks)
+    } catch {
+      // 保留上一次内容，避免竞态覆盖
+    }
   }
 
   function playAllFromPlaylist(): void {
@@ -199,10 +238,20 @@ export default function App() {
         if (status.connected) {
           void loadBaiduDirectory('/')
           void window.api.baiduListRoots().then(setBaiduRoots)
-          void loadLibraryPage(0)
+          void loadLibraryPage('baidu', 0)
         }
       })
       .catch(() => setBaiduStatus({ configured: false, connected: false, expiresAt: null }))
+
+    window.api.webdavGetStatus()
+      .then(status => {
+        setWebdavStatus(status)
+        if (status.connected) {
+          void loadWebdavDirectory('/')
+          void window.api.webdavListRoots().then(setWebdavRoots)
+        }
+      })
+      .catch(() => setWebdavStatus({ configured: false, connected: false, url: '', username: '' }))
 
     const unsubscribe = window.api.onSyncProgress(progress => setSyncProgress(progress))
     return unsubscribe
@@ -244,7 +293,11 @@ export default function App() {
   useEffect(() => {
     if (!queueHydrated || tracks.length === 0) return
     const timer = window.setTimeout(() => {
-      void window.api.queueSave({ tracks, currentIndex, shuffle, repeatMode, playOrder })
+      const snapshot: PlaybackQueueState = { tracks, currentIndex, shuffle, repeatMode, playOrder }
+      queueSaveChain.current = queueSaveChain.current
+        .catch(() => undefined)
+        .then(() => window.api.queueSave(snapshot))
+        .catch(() => undefined)
     }, 400)
     return () => window.clearTimeout(timer)
   }, [tracks, currentIndex, shuffle, repeatMode, playOrder, queueHydrated])
@@ -267,11 +320,12 @@ export default function App() {
     () => baiduEntries.filter(entry => entry.isDirectory || isAudioFile(entry.name)),
     [baiduEntries]
   )
+  const visibleWebdavEntries = useMemo(
+    () => webdavEntries.filter(entry => entry.isDirectory || isAudioFile(entry.name)),
+    [webdavEntries]
+  )
   const visiblePlaylistRows = useMemo(
-    () =>
-      playlistTracks
-        .map((track, index) => ({ track, index }))
-        .filter(({ track }) => matchesTrackQuery(track, playlistSearch)),
+    () => playlistTracks.filter(track => matchesTrackQuery(track, playlistSearch)),
     [playlistTracks, playlistSearch]
   )
 
@@ -353,28 +407,10 @@ export default function App() {
     setRepeatMode(mode => mode === 'off' ? 'all' : mode === 'all' ? 'one' : 'off')
   }
 
-  async function playLibraryTrack(pageLocalIndex: number): Promise<void> {
+  function playLibraryTrack(pageLocalIndex: number): void {
     if (pageLocalIndex < 0 || pageLocalIndex >= libraryTracks.length) return
-    const query = librarySearch.trim()
-    const cap = Math.min(libraryTotal, 10_000)
-    if (cap === 0) {
-      const track = libraryTracks[pageLocalIndex]
-      if (track) playTemporary(track)
-      return
-    }
-    try {
-      const page = await window.api.listTracksPage('baidu', 0, cap, query || undefined)
-      const globalIndex = libraryOffset + pageLocalIndex
-      if (globalIndex < page.tracks.length) {
-        playTemporary(page.tracks[globalIndex])
-      } else {
-        const track = libraryTracks[pageLocalIndex]
-        if (track) playTemporary(track)
-      }
-    } catch {
-      const track = libraryTracks[pageLocalIndex]
-      if (track) playTemporary(track)
-    }
+    const track = libraryTracks[pageLocalIndex]
+    if (track) playTemporary(track)
   }
 
   async function chooseLocalTracks(): Promise<void> {
@@ -392,16 +428,19 @@ export default function App() {
   }
 
   async function loadBaiduDirectory(path: string): Promise<void> {
+    const seq = ++baiduDirSeq.current
     setIsBaiduBusy(true)
     setError(null)
     try {
-      setBaiduEntries(await window.api.baiduListDirectory(path))
+      const entries = await window.api.baiduListDirectory(path)
+      if (seq !== baiduDirSeq.current) return
+      setBaiduEntries(entries)
       setBaiduPath(path)
       setImportPlaylistName(folderName(path))
     } catch (reason) {
-      setError(messageFrom(reason, '无法读取百度网盘目录'))
+      if (seq === baiduDirSeq.current) setError(messageFrom(reason, '无法读取百度网盘目录'))
     } finally {
-      setIsBaiduBusy(false)
+      if (seq === baiduDirSeq.current) setIsBaiduBusy(false)
     }
   }
 
@@ -414,7 +453,7 @@ export default function App() {
       if (status.connected) {
         await loadBaiduDirectory('/')
         setBaiduRoots(await window.api.baiduListRoots())
-        await loadLibraryPage(0)
+        await loadLibraryPage('baidu', 0)
       }
     } catch (reason) {
       setError(messageFrom(reason, '百度网盘登录失败'))
@@ -448,7 +487,7 @@ export default function App() {
       const result = await window.api.baiduImportDirectory(baiduPath, importPlaylistName)
       setBaiduRoots(await window.api.baiduListRoots())
       await refreshPlaylists()
-      await loadLibraryPage(0)
+      await loadLibraryPage('baidu', 0)
       setMainView({ kind: 'playlist', playlistId: result.playlistId })
     } catch (reason) {
       setError(messageFrom(reason, '导入百度目录失败'))
@@ -466,7 +505,7 @@ export default function App() {
       await window.api.baiduResyncDirectory(rootPath)
       setBaiduRoots(await window.api.baiduListRoots())
       await refreshPlaylists()
-      await loadLibraryPage(0)
+      await loadLibraryPage('baidu', 0)
       if (activePlaylistId) await refreshPlaylistTracks(activePlaylistId)
     } catch (reason) {
       setError(messageFrom(reason, '更新百度目录失败'))
@@ -491,6 +530,99 @@ export default function App() {
       setError(messageFrom(reason, '无法播放该百度网盘音频'))
     } finally {
       setIsBaiduBusy(false)
+    }
+  }
+
+  async function loadWebdavDirectory(path: string): Promise<void> {
+    const seq = ++webdavDirSeq.current
+    setIsWebdavBusy(true)
+    setError(null)
+    try {
+      const entries = await window.api.webdavListDirectory(path)
+      if (seq !== webdavDirSeq.current) return
+      setWebdavEntries(entries)
+      setWebdavPath(path)
+      setWebdavImportName(folderName(path, 'WebDAV'))
+    } catch (reason) {
+      if (seq === webdavDirSeq.current) setError(messageFrom(reason, '无法读取 WebDAV 目录'))
+    } finally {
+      if (seq === webdavDirSeq.current) setIsWebdavBusy(false)
+    }
+  }
+
+  async function saveWebdavConfig(): Promise<void> {
+    setIsWebdavBusy(true)
+    setError(null)
+    try {
+      const status = await window.api.webdavSaveConfig({
+        url: webdavConfigForm.url.trim(),
+        username: webdavConfigForm.username.trim(),
+        password: webdavConfigForm.password
+      })
+      setWebdavStatus(status)
+      if (status.connected) {
+        await loadWebdavDirectory('/')
+        setWebdavRoots(await window.api.webdavListRoots())
+        await loadLibraryPage('quark', 0)
+      }
+    } catch (reason) {
+      setError(messageFrom(reason, '连接 WebDAV 失败'))
+    } finally {
+      setIsWebdavBusy(false)
+    }
+  }
+
+  async function importWebdavDirectory(): Promise<void> {
+    setIsWebdavBusy(true)
+    setError(null)
+    setSyncProgress(null)
+    try {
+      const result = await window.api.webdavImportDirectory(webdavPath, webdavImportName)
+      setWebdavRoots(await window.api.webdavListRoots())
+      await refreshPlaylists()
+      await loadLibraryPage('quark', 0)
+      setMainView({ kind: 'playlist', playlistId: result.playlistId })
+    } catch (reason) {
+      setError(messageFrom(reason, '导入 WebDAV 目录失败'))
+    } finally {
+      setIsWebdavBusy(false)
+      setSyncProgress(null)
+    }
+  }
+
+  async function resyncWebdavRoot(rootPath: string): Promise<void> {
+    setIsWebdavBusy(true)
+    setError(null)
+    setSyncProgress(null)
+    try {
+      await window.api.webdavResyncDirectory(rootPath)
+      setWebdavRoots(await window.api.webdavListRoots())
+      await refreshPlaylists()
+      await loadLibraryPage('quark', 0)
+      if (activePlaylistId) await refreshPlaylistTracks(activePlaylistId)
+    } catch (reason) {
+      setError(messageFrom(reason, '更新 WebDAV 目录失败'))
+    } finally {
+      setIsWebdavBusy(false)
+      setSyncProgress(null)
+    }
+  }
+
+  async function openWebdavEntry(entry: CloudEntry): Promise<void> {
+    if (entry.isDirectory) {
+      await loadWebdavDirectory(entry.path)
+      return
+    }
+
+    setIsWebdavBusy(true)
+    setError(null)
+    try {
+      const track = await window.api.webdavCreateTrack(entry)
+      playTemporary(track)
+    } catch (reason) {
+      setError(messageFrom(reason, '无法播放该 WebDAV 音频'))
+    } finally {
+      setIsWebdavBusy(false)
     }
   }
 
@@ -520,13 +652,17 @@ export default function App() {
 
   function sourceStatus(source: LibrarySource): string | null {
     if (source.type === 'local') return null
-    if (source.type === 'quark') return 'WebDAV'
+    if (source.type === 'quark') {
+      if (!webdavStatus) return '检查中'
+      return webdavStatus.connected ? '已连接' : '未连接'
+    }
     if (!baiduStatus) return '检查中'
     return baiduStatus.connected ? '已连接' : '未连接'
   }
 
   const isLocal = mainView.kind === 'source' && activeSourceId === 'local'
   const isBaidu = mainView.kind === 'source' && activeSourceId === 'baidu'
+  const isQuark = mainView.kind === 'source' && activeSourceId === 'quark'
   const isPlaylistView = mainView.kind === 'playlist'
   const currentTrack = temporaryTrack ?? tracks[currentIndex]
   const currentTrackId = currentTrack?.id ?? null
@@ -543,19 +679,22 @@ export default function App() {
 
         <p className="sidebar-label">音乐来源</p>
         <nav className="source-nav" aria-label="音乐来源">
-          {sources.map(source => (
-            <button
-              key={source.id}
-              className={`source-button ${mainView.kind === 'source' && source.id === activeSourceId ? 'active' : ''}`}
-              onClick={() => setMainView({ kind: 'source', sourceId: source.id })}
-            >
-              <span className={`source-icon source-${source.type}`} aria-hidden="true">
-                {sourceIcon[source.type]}
-              </span>
-              <span>{source.name}</span>
-              {sourceStatus(source) && <span className="source-status">{sourceStatus(source)}</span>}
-            </button>
-          ))}
+          {sources.map(source => {
+            const status = sourceStatus(source)
+            return (
+              <button
+                key={source.id}
+                className={`source-button ${mainView.kind === 'source' && source.id === activeSourceId ? 'active' : ''}`}
+                onClick={() => setMainView({ kind: 'source', sourceId: source.id })}
+              >
+                <span className={`source-icon source-${source.type}`} aria-hidden="true">
+                  {sourceIcon[source.type]}
+                </span>
+                <span>{source.name}</span>
+                {status && <span className="source-status">{status}</span>}
+              </button>
+            )
+          })}
         </nav>
 
         <p className="sidebar-label">播放</p>
@@ -758,7 +897,7 @@ export default function App() {
                 <div className="track-table-header" role="row">
                   <span>#</span><span>标题</span><span>来源</span>
                 </div>
-                {visiblePlaylistRows.map(({ track, index }) => (
+                {visiblePlaylistRows.map((track, rowIndex) => (
                   <div
                     key={track.id}
                     className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
@@ -772,7 +911,7 @@ export default function App() {
                       }
                     }}
                   >
-                    <span className="track-number">{track.id === currentTrackId ? '▶' : index + 1}</span>
+                    <span className="track-number">{track.id === currentTrackId ? '▶' : rowIndex + 1}</span>
                     <span className="track-name-cell">
                       <span className="track-name">{track.title}</span>
                       <span className="track-artist">{track.sourceId === 'baidu' ? '百度网盘' : '本地'}</span>
@@ -964,7 +1103,7 @@ export default function App() {
                         <button
                           className="quiet-button"
                           disabled={libraryOffset <= 0 || isBaiduBusy}
-                          onClick={() => void loadLibraryPage(Math.max(0, libraryOffset - PAGE_SIZE))}
+                          onClick={() => void loadLibraryPage('baidu', Math.max(0, libraryOffset - PAGE_SIZE))}
                         >
                           上一页
                         </button>
@@ -972,7 +1111,7 @@ export default function App() {
                         <button
                           className="quiet-button"
                           disabled={libraryOffset + PAGE_SIZE >= libraryTotal || isBaiduBusy}
-                          onClick={() => void loadLibraryPage(libraryOffset + PAGE_SIZE)}
+                          onClick={() => void loadLibraryPage('baidu', libraryOffset + PAGE_SIZE)}
                         >
                           下一页
                         </button>
@@ -1004,11 +1143,203 @@ export default function App() {
             </div>
           )}
 
-          {mainView.kind === 'source' && activeSourceId === 'quark' && (
+          {isQuark && !webdavStatus?.connected && (
             <div className="empty-state">
               <div className="empty-art" aria-hidden="true"><span>W</span></div>
-              <h2>WebDAV 尚未连接</h2>
-              <p>百度链路稳定后，将接入通用 WebDAV Provider。</p>
+              <h2>连接 WebDAV 网盘</h2>
+              <p>输入支持 WebDAV 的服务器地址与账号，即可浏览、导入并播放其中的音乐。</p>
+              <form
+                className="webdav-form"
+                onSubmit={event => {
+                  event.preventDefault()
+                  void saveWebdavConfig()
+                }}
+              >
+                <label className="import-label">
+                  服务器地址
+                  <input
+                    type="url"
+                    value={webdavConfigForm.url}
+                    onChange={event => setWebdavConfigForm(form => ({ ...form, url: event.target.value }))}
+                    placeholder="https://dav.example.com"
+                    required
+                  />
+                </label>
+                <label className="import-label">
+                  用户名
+                  <input
+                    type="text"
+                    value={webdavConfigForm.username}
+                    onChange={event => setWebdavConfigForm(form => ({ ...form, username: event.target.value }))}
+                    autoComplete="username"
+                  />
+                </label>
+                <label className="import-label">
+                  密码
+                  <input
+                    type="password"
+                    value={webdavConfigForm.password}
+                    onChange={event => setWebdavConfigForm(form => ({ ...form, password: event.target.value }))}
+                    autoComplete="current-password"
+                  />
+                </label>
+                <button className="primary-button" type="submit" disabled={isWebdavBusy || !webdavConfigForm.url.trim()}>
+                  {isWebdavBusy ? '连接中…' : '保存并连接'}
+                </button>
+              </form>
+            </div>
+          )}
+
+          {isQuark && webdavStatus?.connected && (
+            <div className="cloud-browser">
+              <div className="content-tabs">
+                <button
+                  className={`segment-tab ${webdavPanel === 'browse' ? 'active' : ''}`}
+                  onClick={() => setWebdavPanel('browse')}
+                >
+                  浏览
+                </button>
+                <button
+                  className={`segment-tab ${webdavPanel === 'index' ? 'active' : ''}`}
+                  onClick={() => setWebdavPanel('index')}
+                >
+                  音乐库
+                </button>
+              </div>
+
+              {webdavPanel === 'browse' ? (
+                <>
+                  <div className="import-panel">
+                    <label className="import-label">
+                      导入歌单名称
+                      <input
+                        type="text"
+                        value={webdavImportName}
+                        onChange={event => setWebdavImportName(event.target.value)}
+                      />
+                    </label>
+                    <button
+                      className="primary-button"
+                      onClick={() => void importWebdavDirectory()}
+                      disabled={isWebdavBusy}
+                    >
+                      {isWebdavBusy ? '同步中…' : '导入当前目录（递归）'}
+                    </button>
+                  </div>
+
+                  <div className="path-bar">
+                    <button
+                      className="quiet-button"
+                      onClick={() => void loadWebdavDirectory(parentPath(webdavPath))}
+                      disabled={isWebdavBusy || webdavPath === '/'}
+                    >
+                      ‹ 返回
+                    </button>
+                    <span title={webdavPath}>{webdavPath}</span>
+                    <button className="quiet-button" onClick={() => void loadWebdavDirectory(webdavPath)} disabled={isWebdavBusy}>
+                      {isWebdavBusy ? '载入中…' : '刷新目录'}
+                    </button>
+                  </div>
+                  <div className="track-table" role="table" aria-label="WebDAV 浏览">
+                    <div className="track-table-header" role="row">
+                      <span>类型</span><span>名称</span><span>大小</span>
+                    </div>
+                    {visibleWebdavEntries.map(entry => (
+                      <button
+                        key={entry.id}
+                        className="track-row"
+                        onClick={() => void openWebdavEntry(entry)}
+                        disabled={isWebdavBusy}
+                        role="row"
+                      >
+                        <span className="track-number">{entry.isDirectory ? '▸' : '♫'}</span>
+                        <span className="track-name-cell">
+                          <span className="track-name">{entry.name}</span>
+                          <span className="track-artist">{entry.isDirectory ? '文件夹' : 'WebDAV 音频'}</span>
+                        </span>
+                        <span className="track-source">{entry.isDirectory ? '—' : formatSize(entry.size)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  {webdavRoots.length > 0 && (
+                    <div className="roots-panel">
+                      <p className="panel-title">已导入目录</p>
+                      {webdavRoots.map(root => (
+                        <div key={root.id} className="root-row">
+                          <button
+                            className="quiet-button"
+                            onClick={() => {
+                              if (root.playlistId) {
+                                setMainView({ kind: 'playlist', playlistId: root.playlistId })
+                              }
+                            }}
+                          >
+                            {root.rootPath}
+                          </button>
+                          <button className="quiet-button" onClick={() => void resyncWebdavRoot(root.rootPath)} disabled={isWebdavBusy}>
+                            更新
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="library-panel">
+                    <div className="panel-header-row">
+                      <p className="panel-title">WebDAV 索引（{libraryTotal} 首）</p>
+                      <SearchField
+                        value={librarySearch}
+                        onChange={setLibrarySearch}
+                        placeholder="搜索标题…"
+                        aria-label="搜索 WebDAV 索引"
+                        disabled={isWebdavBusy}
+                        debounceMs={350}
+                        onDebouncedChange={runLibrarySearch}
+                      />
+                      <div className="pager">
+                        <button
+                          className="quiet-button"
+                          disabled={libraryOffset <= 0 || isWebdavBusy}
+                          onClick={() => void loadLibraryPage('quark', Math.max(0, libraryOffset - PAGE_SIZE))}
+                        >
+                          上一页
+                        </button>
+                        <span>{libraryOffset + 1}-{Math.min(libraryOffset + PAGE_SIZE, libraryTotal)}</span>
+                        <button
+                          className="quiet-button"
+                          disabled={libraryOffset + PAGE_SIZE >= libraryTotal || isWebdavBusy}
+                          onClick={() => void loadLibraryPage('quark', libraryOffset + PAGE_SIZE)}
+                        >
+                          下一页
+                        </button>
+                      </div>
+                    </div>
+                    <div className="track-table" role="table" aria-label="WebDAV 索引">
+                      <div className="track-table-header" role="row">
+                        <span>#</span><span>标题</span><span>来源</span>
+                      </div>
+                      {libraryTracks.map((track, index) => (
+                        <button
+                          key={track.id}
+                          className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
+                          onClick={() => playLibraryTrack(index)}
+                          role="row"
+                        >
+                          <span className="track-number">{libraryOffset + index + 1}</span>
+                          <span className="track-name-cell">
+                            <span className="track-name">{track.title}</span>
+                            <span className="track-artist">WebDAV</span>
+                          </span>
+                          <span className="track-source">索引</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </section>

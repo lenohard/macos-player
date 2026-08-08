@@ -26,6 +26,8 @@ import { BaiduService } from './baidu'
 import { openLibraryDatabase } from './library-db'
 import { LibraryService } from './library'
 import { fetchWithElectronNet, isAsciiHeaderValue } from './media-net'
+import { WebDAVService } from './webdav'
+import { syncWebDAVDirectory, resyncWebDAVDirectory } from './webdav-sync'
 
 const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.wav'])
 
@@ -46,6 +48,7 @@ app.setName('corner')
 let mainWindow: BrowserWindow | null = null
 let library: LibraryService | null = null
 const baiduService = new BaiduService()
+const webdavService = new WebDAVService()
 
 function emitUpdateStatus(snapshot: UpdateSnapshot): void {
   mainWindow?.webContents.send(UPDATE_STATUS_CHANNEL, snapshot)
@@ -89,7 +92,7 @@ function createWindow(): void {
 const sources: LibrarySource[] = [
   { id: 'local', name: '本地音乐', type: 'local' },
   { id: 'baidu', name: '百度网盘', type: 'baidu' },
-  { id: 'quark', name: '夸克网盘', type: 'quark' }
+  { id: 'quark', name: 'WebDAV 网盘', type: 'quark' }
 ]
 
 ipcMain.handle(IPC_CHANNELS.queueSave, (_event, state: PlaybackQueueState): void => {
@@ -132,7 +135,25 @@ ipcMain.handle(IPC_CHANNELS.openLocalTracks, async (): Promise<Track[]> => {
     .map(filePath => getLibrary().upsertLocalTrack(filePath))
 })
 
-ipcMain.handle(IPC_CHANNELS.baiduGetStatus, () => baiduService.getStatus())
+ipcMain.handle(IPC_CHANNELS.webdavGetStatus, async () => {
+  try { return await webdavService.testConnection() } catch { return webdavService.getStatus() }
+})
+ipcMain.handle(IPC_CHANNELS.webdavSaveConfig, async (_event, config) => {
+  webdavService.saveConfig(config)
+  try { return await webdavService.testConnection() } catch { return webdavService.getStatus() }
+})
+ipcMain.handle(IPC_CHANNELS.webdavListDirectory, (_event, path: string) => webdavService.listDirectory(path))
+ipcMain.handle(IPC_CHANNELS.webdavCreateTrack, (_event, entry: CloudEntry): Track => {
+  if (entry.isDirectory) throw new Error('文件夹不能播放。')
+  const id = getLibrary().upsertCloudTrack('quark', entry, Date.now()); const row = getLibrary().getTrackRow(id)
+  if (!row) throw new Error('无法创建播放条目。')
+  return { id: row.id, title: row.title, artist: row.artist, durationSec: row.duration_sec, sourceId: row.source_id, playbackUrl: `app-media://${row.id}/audio` }
+})
+ipcMain.handle(IPC_CHANNELS.webdavImportDirectory, (_event, root: string, name: string) => syncWebDAVDirectory(webdavService,getLibrary(),root,name,emitSyncProgress))
+ipcMain.handle(IPC_CHANNELS.webdavResyncDirectory, (_event, root: string) => resyncWebDAVDirectory(webdavService,getLibrary(),root,emitSyncProgress))
+ipcMain.handle(IPC_CHANNELS.webdavListRoots, () => getLibrary().listLibraryRoots('quark').map(root => ({id:root.id,sourceId:root.source_id,rootPath:root.root_path,playlistId:root.playlist_id,lastSyncAt:root.last_sync_at,lastSyncStatus:root.last_sync_status})))
+
+
 ipcMain.handle(IPC_CHANNELS.baiduLogin, () => baiduService.login(mainWindow))
 ipcMain.handle(IPC_CHANNELS.baiduLogout, () => baiduService.logout())
 ipcMain.handle(
@@ -209,6 +230,7 @@ app.whenReady().then(() => {
     const source = getLibrary().resolveMedia(id)
     if (!source) return new Response('Not found', { status: 404 })
     if (source.kind === 'baidu') return baiduService.stream(source.path, request)
+    if (source.kind === 'webdav') return webdavService.stream(source.path, request)
 
     const headers = new Headers()
     const range = request.headers.get('Range')

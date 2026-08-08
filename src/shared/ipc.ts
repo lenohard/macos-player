@@ -16,6 +16,13 @@ export const IPC_CHANNELS = {
   baiduImportDirectory: 'baidu:importDirectory',
   baiduResyncDirectory: 'baidu:resyncDirectory',
   baiduListRoots: 'baidu:listRoots',
+  webdavGetStatus: 'webdav:getStatus',
+  webdavSaveConfig: 'webdav:saveConfig',
+  webdavListDirectory: 'webdav:listDirectory',
+  webdavCreateTrack: 'webdav:createTrack',
+  webdavImportDirectory: 'webdav:importDirectory',
+  webdavResyncDirectory: 'webdav:resyncDirectory',
+  webdavListRoots: 'webdav:listRoots',
   playlistList: 'playlist:list',
   playlistCreate: 'playlist:create',
   playlistRename: 'playlist:rename',
@@ -70,6 +77,19 @@ export interface LibrarySource {
   id: string
   name: string
   type: 'local' | 'quark' | 'baidu'
+}
+
+export interface WebDAVConfig {
+  url: string
+  username: string
+  password: string
+}
+
+export interface WebDAVStatus {
+  configured: boolean
+  connected: boolean
+  url: string
+  username: string
 }
 
 export interface BaiduAuthStatus {
@@ -160,6 +180,13 @@ export interface IPCApi {
   baiduImportDirectory(rootPath: string, playlistName: string): Promise<BaiduImportResult>
   baiduResyncDirectory(rootPath: string): Promise<BaiduImportResult>
   baiduListRoots(): Promise<LibraryRootInfo[]>
+  webdavGetStatus(): Promise<WebDAVStatus>
+  webdavSaveConfig(config: WebDAVConfig): Promise<WebDAVStatus>
+  webdavListDirectory(path: string): Promise<CloudEntry[]>
+  webdavCreateTrack(entry: CloudEntry): Promise<Track>
+  webdavImportDirectory(rootPath: string, playlistName: string): Promise<BaiduImportResult>
+  webdavResyncDirectory(rootPath: string): Promise<BaiduImportResult>
+  webdavListRoots(): Promise<LibraryRootInfo[]>
   onSyncProgress(listener: (progress: SyncProgress) => void): () => void
   playlistList(): Promise<PlaylistSummary[]>
   playlistCreate(name: string): Promise<PlaylistSummary>

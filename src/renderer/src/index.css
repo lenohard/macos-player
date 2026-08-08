@@ -235,6 +235,9 @@ input:focus-visible {
 }
 
 .content-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   gap: 0;
   max-width: 980px;
@@ -243,6 +246,7 @@ input:focus-visible {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 9px;
+  backdrop-filter: blur(14px);
 }
 
 .segment-tab {
@@ -612,6 +616,19 @@ input:focus-visible {
 .cloud-browser {
   max-width: 980px;
   margin: 0 auto;
+}
+
+.webdav-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(320px, 100%);
+  margin-top: 18px;
+  text-align: left;
+}
+
+.webdav-form .primary-button {
+  margin-top: 4px;
 }
 
 .path-bar {

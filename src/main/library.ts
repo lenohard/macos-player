@@ -78,11 +78,12 @@ export class LibraryService {
     return row ? rowToTrackDetail(row) : null
   }
 
-  resolveMedia(id: string): { kind: 'local' | 'baidu'; path: string } | null {
+  resolveMedia(id: string): { kind: 'local' | 'baidu' | 'webdav'; path: string } | null {
     const row = this.getTrackRow(id)
     if (!row) return null
     if (row.source_id === 'local') return { kind: 'local', path: row.path }
     if (row.source_id === 'baidu') return { kind: 'baidu', path: row.path }
+    if (row.source_id === 'quark') return { kind: 'webdav', path: row.path }
     return null
   }
 
@@ -150,15 +151,15 @@ export class LibraryService {
     return rowToTrack(row)
   }
 
-  upsertBaiduTrack(entry: CloudEntry, syncToken: number): string {
+  upsertCloudTrack(sourceId: 'baidu' | 'quark', entry: CloudEntry, syncToken: number): string {
     const now = Date.now()
     const remoteId = entry.id
     const title = basename(entry.name, extname(entry.name))
 
     const byRemote = this.db.prepare(`
       SELECT id FROM tracks
-      WHERE source_id = 'baidu' AND remote_id = ? LIMIT 1
-    `).get(remoteId) as { id: string } | undefined
+      WHERE source_id = ? AND remote_id = ? LIMIT 1
+    `).get(sourceId, remoteId) as { id: string } | undefined
 
     if (byRemote) {
       this.db.prepare(`
@@ -171,8 +172,8 @@ export class LibraryService {
     }
 
     const byPath = this.db.prepare(`
-      SELECT id FROM tracks WHERE source_id = 'baidu' AND path = ? LIMIT 1
-    `).get(entry.path) as { id: string } | undefined
+      SELECT id FROM tracks WHERE source_id = ? AND path = ? LIMIT 1
+    `).get(sourceId, entry.path) as { id: string } | undefined
 
     if (byPath) {
       this.db.prepare(`
@@ -189,29 +190,41 @@ export class LibraryService {
       INSERT INTO tracks (
         id, source_id, remote_id, path, title, artist, duration_sec, size,
         modified_at, md5, is_deleted, last_seen_sync, created_at, updated_at
-      ) VALUES (?, 'baidu', ?, ?, ?, NULL, NULL, ?, ?, NULL, 0, ?, ?, ?)
-    `).run(id, remoteId, entry.path, title, entry.size, entry.modifiedAt, syncToken, now, now)
+      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, 0, ?, ?, ?)
+    `).run(id, sourceId, remoteId, entry.path, title, entry.size, entry.modifiedAt, syncToken, now, now)
     return id
   }
 
-  markBaiduRootStale(rootPath: string, syncToken: number): void {
+  upsertBaiduTrack(entry: CloudEntry, syncToken: number): string {
+    return this.upsertCloudTrack('baidu', entry, syncToken)
+  }
+
+  markCloudRootStale(sourceId: 'baidu' | 'quark', rootPath: string, syncToken: number): void {
     const prefix = normalizeRootPrefix(rootPath)
     this.db.prepare(`
       UPDATE tracks SET last_seen_sync = NULL
-      WHERE source_id = 'baidu' AND path LIKE ? ESCAPE '\\'
-    `).run(`${escapeLike(prefix)}%`)
+      WHERE source_id = ? AND path LIKE ? ESCAPE '\\'
+    `).run(sourceId, `${escapeLike(prefix)}%`)
     void syncToken
   }
 
-  finalizeBaiduRootSync(rootPath: string, syncToken: number): number {
+  markBaiduRootStale(rootPath: string, syncToken: number): void {
+    this.markCloudRootStale('baidu', rootPath, syncToken)
+  }
+
+  finalizeCloudRootSync(sourceId: 'baidu' | 'quark', rootPath: string, syncToken: number): number {
     const prefix = normalizeRootPrefix(rootPath)
     const result = this.db.prepare(`
       UPDATE tracks SET is_deleted = 1, updated_at = ?
-      WHERE source_id = 'baidu'
+      WHERE source_id = ?
         AND path LIKE ? ESCAPE '\\'
         AND (last_seen_sync IS NULL OR last_seen_sync != ?)
-    `).run(Date.now(), `${escapeLike(prefix)}%`, syncToken)
+    `).run(Date.now(), sourceId, `${escapeLike(prefix)}%`, syncToken)
     return Number(result.changes)
+  }
+
+  finalizeBaiduRootSync(rootPath: string, syncToken: number): number {
+    return this.finalizeCloudRootSync('baidu', rootPath, syncToken)
   }
 
   upsertLibraryRoot(sourceId: string, rootPath: string, playlistId: string): void {

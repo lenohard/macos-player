@@ -15,7 +15,9 @@ import {
   type Track,
   type TrackDetail,
   type TracksPage,
-  type UpdateSnapshot
+  type UpdateSnapshot,
+  type WebDAVConfig,
+  type WebDAVStatus
 } from '../shared/ipc'
 
 const api: IPCApi = {
@@ -42,6 +44,13 @@ const api: IPCApi = {
   baiduResyncDirectory: (rootPath: string): Promise<BaiduImportResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.baiduResyncDirectory, rootPath),
   baiduListRoots: (): Promise<LibraryRootInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.baiduListRoots),
+  webdavGetStatus: (): Promise<WebDAVStatus> => ipcRenderer.invoke(IPC_CHANNELS.webdavGetStatus),
+  webdavSaveConfig: (config: WebDAVConfig): Promise<WebDAVStatus> => ipcRenderer.invoke(IPC_CHANNELS.webdavSaveConfig, config),
+  webdavListDirectory: (path: string): Promise<CloudEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.webdavListDirectory, path),
+  webdavCreateTrack: (entry: CloudEntry): Promise<Track> => ipcRenderer.invoke(IPC_CHANNELS.webdavCreateTrack, entry),
+  webdavImportDirectory: (root: string, name: string): Promise<BaiduImportResult> => ipcRenderer.invoke(IPC_CHANNELS.webdavImportDirectory, root, name),
+  webdavResyncDirectory: (root: string): Promise<BaiduImportResult> => ipcRenderer.invoke(IPC_CHANNELS.webdavResyncDirectory, root),
+  webdavListRoots: (): Promise<LibraryRootInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.webdavListRoots),
   onSyncProgress: (listener: (progress: SyncProgress) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: SyncProgress) => listener(progress)
     ipcRenderer.on(SYNC_PROGRESS_CHANNEL, handler)
