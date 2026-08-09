@@ -382,12 +382,19 @@ export default function App() {
   }
 
   function removeTrackFromQueue(index: number): void {
-    setTracks(queue => queue.filter((_, queueIndex) => queueIndex !== index))
+    const nextTracks = tracks.filter((_, queueIndex) => queueIndex !== index)
+    setTracks(nextTracks)
     setCurrentIndex(activeIndex => {
       if (activeIndex > index) return activeIndex - 1
-      if (activeIndex === index) return tracks.length <= 1 ? -1 : Math.min(index, tracks.length - 2)
+      if (activeIndex === index) return nextTracks.length === 0 ? -1 : Math.min(index, nextTracks.length - 1)
       return activeIndex
     })
+    if (nextTracks.length === 0) {
+      queueSaveChain.current = queueSaveChain.current
+        .catch(() => undefined)
+        .then(() => window.api.queueSave({ tracks: [], currentIndex: -1, shuffle, repeatMode, playOrder: [] }))
+        .catch(() => undefined)
+    }
   }
 
   async function showTrackContextMenu(
@@ -816,7 +823,7 @@ export default function App() {
             ＋
           </button>
         </div>
-        <nav className="playlist-nav" aria-label="歌单">
+        <nav className="playlist-nav playlist-list" aria-label="歌单">
           {playlists.map(playlist => (
             <button
               key={playlist.id}
@@ -1025,7 +1032,6 @@ export default function App() {
                     role="row"
                     tabIndex={0}
                     onClick={() => openTrackDetail(track)}
-                    onDoubleClick={() => playTemporary(track)}
                     onContextMenu={event => {
                       event.preventDefault()
                       if (activePlaylistId) void showTrackContextMenu(track, { playlistId: activePlaylistId })
@@ -1241,7 +1247,7 @@ export default function App() {
                         >
                           上一页
                         </button>
-                        <span>{libraryOffset + 1}-{Math.min(libraryOffset + PAGE_SIZE, libraryTotal)}</span>
+                        <span>{libraryTotal === 0 ? '0 首' : `${libraryOffset + 1}-${Math.min(libraryOffset + PAGE_SIZE, libraryTotal)}`}</span>
                         <button
                           className="quiet-button"
                           disabled={libraryOffset + PAGE_SIZE >= libraryTotal || isBaiduBusy}
@@ -1413,7 +1419,7 @@ export default function App() {
                         >
                           上一页
                         </button>
-                        <span>{libraryOffset + 1}-{Math.min(libraryOffset + PAGE_SIZE, libraryTotal)}</span>
+                        <span>{libraryTotal === 0 ? '0 首' : `${libraryOffset + 1}-${Math.min(libraryOffset + PAGE_SIZE, libraryTotal)}`}</span>
                         <button
                           className="quiet-button"
                           disabled={libraryOffset + PAGE_SIZE >= libraryTotal || isWebdavBusy}
