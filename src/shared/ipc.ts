@@ -34,9 +34,11 @@ export const IPC_CHANNELS = {
   updateGetStatus: 'update:getStatus',
   updateCheck: 'update:check',
   updateDownload: 'update:download',
-  updateInstall: 'update:install'
+  updateInstall: 'update:install',
+  trackContextMenu: 'track:contextMenu'
 } as const
 
+export const OPEN_SETTINGS_CHANNEL = 'app:openSettings'
 export const SYNC_PROGRESS_CHANNEL = 'library:syncProgress'
 export const UPDATE_STATUS_CHANNEL = 'update:status'
 
@@ -165,6 +167,16 @@ export interface UpdateSnapshot {
   info: UpdateReleaseInfo | null
 }
 
+export interface TrackContextMenuRequest {
+  playlists: Array<Pick<PlaylistSummary, 'id' | 'name'>>
+  canRemoveFromQueue: boolean
+  canRemoveFromPlaylist: boolean
+}
+
+export type TrackContextMenuAction =
+  | { type: 'play' | 'playNext' | 'addToQueue' | 'showDetails' | 'removeFromQueue' | 'removeFromPlaylist' }
+  | { type: 'addToPlaylist'; playlistId: string }
+
 export interface IPCApi {
   queueSave(state: PlaybackQueueState): Promise<void>
   queueLoad(): Promise<PlaybackQueueState | null>
@@ -201,6 +213,8 @@ export interface IPCApi {
   updateCheck(): Promise<UpdateSnapshot>
   updateDownload(): Promise<UpdateSnapshot>
   updateInstall(): Promise<boolean>
+  trackContextMenu(request: TrackContextMenuRequest): Promise<TrackContextMenuAction | null>
+  onOpenSettings(listener: () => void): () => void
   onUpdateStatus(listener: (snapshot: UpdateSnapshot) => void): () => void
 }
 

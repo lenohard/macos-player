@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC_CHANNELS,
+  OPEN_SETTINGS_CHANNEL,
   SYNC_PROGRESS_CHANNEL,
   UPDATE_STATUS_CHANNEL,
   type BaiduAuthStatus,
@@ -13,6 +14,8 @@ import {
   type PlaylistSummary,
   type SyncProgress,
   type Track,
+  type TrackContextMenuAction,
+  type TrackContextMenuRequest,
   type TrackDetail,
   type TracksPage,
   type UpdateSnapshot,
@@ -73,6 +76,13 @@ const api: IPCApi = {
   updateCheck: (): Promise<UpdateSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.updateCheck),
   updateDownload: (): Promise<UpdateSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.updateDownload),
   updateInstall: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.updateInstall),
+  trackContextMenu: (request: TrackContextMenuRequest): Promise<TrackContextMenuAction | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.trackContextMenu, request),
+  onOpenSettings: (listener: () => void) => {
+    const handler = () => listener()
+    ipcRenderer.on(OPEN_SETTINGS_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(OPEN_SETTINGS_CHANNEL, handler)
+  },
   onUpdateStatus: (listener: (snapshot: UpdateSnapshot) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: UpdateSnapshot) => listener(snapshot)
     ipcRenderer.on(UPDATE_STATUS_CHANNEL, handler)

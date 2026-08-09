@@ -9,12 +9,14 @@ import type {
   RepeatMode,
   SyncProgress,
   Track,
+  TrackContextMenuAction,
   UpdateSnapshot,
   WebDAVStatus
 } from '@shared/ipc'
-import AboutPanel from './AboutPanel'
 import PlayerBar from './PlayerBar'
 import SearchField from './SearchField'
+import SettingsPanel from './SettingsPanel'
+import { trackSourceLabel } from './sourceLabels'
 import TrackDetail from './TrackDetail'
 
 const sourceIcon: Record<LibrarySource['type'], string> = {
@@ -97,7 +99,7 @@ type MainView =
   | { kind: 'source'; sourceId: string }
   | { kind: 'playlist'; playlistId: string }
   | { kind: 'queue' }
-  | { kind: 'about' }
+  | { kind: 'settings' }
   | { kind: 'trackDetail'; trackId: string; returnTo: MainView }
 
 type CloudPanel = 'browse' | 'index'
@@ -146,7 +148,7 @@ export default function App() {
   const [webdavRoots, setWebdavRoots] = useState<LibraryRootInfo[]>([])
   const [isWebdavBusy, setIsWebdavBusy] = useState(false)
   const [webdavPanel, setWebdavPanel] = useState<CloudPanel>('browse')
-  const [webdavEditing, setWebdavEditing] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<'connections' | 'about'>('connections')
   const [webdavConfigForm, setWebdavConfigForm] = useState({ url: '', username: '', password: '' })
   const [webdavImportName, setWebdavImportName] = useState('')
   const queueRowRef = useRef<HTMLButtonElement | null>(null)
@@ -264,6 +266,11 @@ export default function App() {
     return window.api.onUpdateStatus(setUpdateSnapshot)
   }, [])
 
+  useEffect(() => window.api.onOpenSettings(() => {
+    setSettingsSection('connections')
+    setMainView({ kind: 'settings' })
+  }), [])
+
   useEffect(() => {
     void window.api.queueLoad()
       .then(state => {
@@ -360,6 +367,70 @@ export default function App() {
 
   function playTemporary(track: Track): void {
     setTemporaryTrack(track)
+  }
+
+  function addTrackToQueue(track: Track): void {
+    setTracks(queue => [...queue, track])
+  }
+
+  function playTrackNext(track: Track): void {
+    setTracks(queue => {
+      const insertAt = currentIndex >= 0 ? Math.min(currentIndex + 1, queue.length) : 0
+      return [...queue.slice(0, insertAt), track, ...queue.slice(insertAt)]
+    })
+    if (currentIndex < 0) setCurrentIndex(0)
+  }
+
+  function removeTrackFromQueue(index: number): void {
+    setTracks(queue => queue.filter((_, queueIndex) => queueIndex !== index))
+    setCurrentIndex(activeIndex => {
+      if (activeIndex > index) return activeIndex - 1
+      if (activeIndex === index) return tracks.length <= 1 ? -1 : Math.min(index, tracks.length - 2)
+      return activeIndex
+    })
+  }
+
+  async function showTrackContextMenu(
+    track: Track,
+    options: { queueIndex?: number; playlistId?: string } = {}
+  ): Promise<void> {
+    const action = await window.api.trackContextMenu({
+      playlists: playlists.map(({ id, name }) => ({ id, name })),
+      canRemoveFromQueue: options.queueIndex !== undefined,
+      canRemoveFromPlaylist: options.playlistId !== undefined
+    })
+    if (!action) return
+    handleTrackMenuAction(track, action, options)
+  }
+
+  function handleTrackMenuAction(
+    track: Track,
+    action: TrackContextMenuAction,
+    options: { queueIndex?: number; playlistId?: string }
+  ): void {
+    if (action.type === 'play') {
+      if (options.queueIndex !== undefined) playQueueIndex(options.queueIndex)
+      else playTemporary(track)
+    } else if (action.type === 'playNext') {
+      playTrackNext(track)
+    } else if (action.type === 'addToQueue') {
+      addTrackToQueue(track)
+    } else if (action.type === 'showDetails') {
+      openTrackDetail(track)
+    } else if (action.type === 'removeFromQueue' && options.queueIndex !== undefined) {
+      removeTrackFromQueue(options.queueIndex)
+    } else if (action.type === 'removeFromPlaylist' && options.playlistId) {
+      void window.api.playlistRemoveTrack(options.playlistId, track.id)
+        .then(async () => {
+          await refreshPlaylistTracks(options.playlistId!)
+          await refreshPlaylists()
+        })
+        .catch(reason => setError(messageFrom(reason, '无法从歌单移除曲目')))
+    } else if (action.type === 'addToPlaylist') {
+      void window.api.playlistAddTrack(action.playlistId, track.id)
+        .then(refreshPlaylists)
+        .catch(reason => setError(messageFrom(reason, '添加到歌单失败')))
+    }
   }
 
   function openTrackDetail(track: Track): void {
@@ -560,7 +631,6 @@ export default function App() {
       setWebdavEntries([])
       setWebdavPath('/')
       setWebdavRoots([])
-      setWebdavEditing(false)
       setWebdavConfigForm({ url: '', username: '', password: '' })
       setLibraryTracks([])
       setLibraryTotal(0)
@@ -582,7 +652,7 @@ export default function App() {
       })
       setWebdavStatus(status)
       if (status.connected) {
-        setWebdavEditing(false)
+        setWebdavConfigForm(form => ({ ...form, password: '' }))
         await loadWebdavDirectory('/')
         setWebdavRoots(await window.api.webdavListRoots())
         await loadLibraryPage('quark', 0)
@@ -762,12 +832,15 @@ export default function App() {
 
         <button
           type="button"
-          className={`source-button sidebar-about ${mainView.kind === 'about' ? 'active' : ''}`}
-          onClick={() => setMainView({ kind: 'about' })}
+          className={`source-button sidebar-settings ${mainView.kind === 'settings' ? 'active' : ''}`}
+          onClick={() => {
+            setSettingsSection('connections')
+            setMainView({ kind: 'settings' })
+          }}
         >
-          <span className="source-icon source-local" aria-hidden="true">i</span>
-          <span>关于</span>
-          <span className="source-status">v{updateSnapshot.appVersion}</span>
+          <span className="source-icon source-local" aria-hidden="true">⚙</span>
+          <span>设置</span>
+          <span className="source-status">⌘,</span>
         </button>
 
         <div className="sidebar-footer">
@@ -780,8 +853,8 @@ export default function App() {
         <header className="content-header">
           <div>
             <p className="eyebrow">
-              {mainView.kind === 'about'
-                ? '关于'
+              {mainView.kind === 'settings'
+                ? '偏好设置'
                 : mainView.kind === 'queue'
                   ? '播放列表'
                   : isPlaylistView
@@ -791,8 +864,8 @@ export default function App() {
                       : '音乐库'}
             </p>
             <h1>
-              {mainView.kind === 'about'
-                ? 'corner'
+              {mainView.kind === 'settings'
+                ? settingsSection === 'connections' ? '连接' : '关于 corner'
                 : mainView.kind === 'queue'
                   ? '当前播放'
                   : isPlaylistView
@@ -808,25 +881,17 @@ export default function App() {
               {isChoosing ? '正在选择…' : '选择音乐'}
             </button>
           )}
-          {isBaidu && baiduStatus?.connected && (
-            <button className="quiet-button" onClick={() => void logoutBaidu()} disabled={isBaiduBusy}>退出登录</button>
+          {isBaidu && (
+            <button className="quiet-button" onClick={() => {
+              setSettingsSection('connections')
+              setMainView({ kind: 'settings' })
+            }}>连接设置</button>
           )}
-          {isQuark && webdavStatus?.connected && !webdavEditing && (
-            <div className="header-actions">
-              <button
-                className="quiet-button"
-                onClick={() => {
-                  setWebdavConfigForm(form => ({ ...form, url: webdavStatus.url, username: webdavStatus.username, password: '' }))
-                  setWebdavEditing(true)
-                }}
-                disabled={isWebdavBusy}
-              >
-                修改 WebDAV
-              </button>
-              <button className="quiet-button" onClick={() => void disconnectWebdav()} disabled={isWebdavBusy}>
-                断开连接
-              </button>
-            </div>
+          {isQuark && (
+            <button className="quiet-button" onClick={() => {
+              setSettingsSection('connections')
+              setMainView({ kind: 'settings' })
+            }}>连接设置</button>
           )}
         </header>
 
@@ -840,13 +905,25 @@ export default function App() {
         )}
 
         <section className="library-content">
-          {mainView.kind === 'about' && (
-            <AboutPanel
-              snapshot={updateSnapshot}
-              busy={updateBusy}
-              onCheck={() => void window.api.updateCheck().then(setUpdateSnapshot)}
-              onDownload={() => void window.api.updateDownload().then(setUpdateSnapshot)}
-              onInstall={() => void window.api.updateInstall()}
+          {mainView.kind === 'settings' && (
+            <SettingsPanel
+              section={settingsSection}
+              onSectionChange={setSettingsSection}
+              baiduStatus={baiduStatus}
+              baiduBusy={isBaiduBusy}
+              onBaiduLogin={() => void loginBaidu()}
+              onBaiduLogout={() => void logoutBaidu()}
+              webdavStatus={webdavStatus}
+              webdavBusy={isWebdavBusy}
+              webdavForm={webdavConfigForm}
+              onWebdavFormChange={setWebdavConfigForm}
+              onWebdavSave={() => void saveWebdavConfig()}
+              onWebdavDisconnect={() => void disconnectWebdav()}
+              updateSnapshot={updateSnapshot}
+              updateBusy={updateBusy}
+              onUpdateCheck={() => void window.api.updateCheck().then(setUpdateSnapshot)}
+              onUpdateDownload={() => void window.api.updateDownload().then(setUpdateSnapshot)}
+              onUpdateInstall={() => void window.api.updateInstall()}
             />
           )}
 
@@ -885,14 +962,19 @@ export default function App() {
                     ref={index === currentIndex ? queueRowRef : undefined}
                     className={`track-row ${index === currentIndex ? 'selected' : ''}`}
                     onClick={() => playQueueIndex(index)}
+                    onContextMenu={event => {
+                      event.preventDefault()
+                      void showTrackContextMenu(track, { queueIndex: index })
+                    }}
+                    aria-label={`${track.title}，${trackSourceLabel(track.sourceId)}`}
                     role="row"
                   >
                     <span className="track-number">{index === currentIndex && !temporaryTrack ? '▶' : index + 1}</span>
                     <span className="track-name-cell">
                       <span className="track-name">{track.title}</span>
-                      <span className="track-artist">{track.artist ?? (track.sourceId === 'baidu' ? '百度网盘' : '本地')}</span>
+                      <span className="track-artist">{track.artist ?? trackSourceLabel(track.sourceId)}</span>
                     </span>
-                    <span className="track-source">{track.sourceId}</span>
+                    <span className="track-source">{trackSourceLabel(track.sourceId)}</span>
                   </button>
                 ))}
                 {tracks.length === 0 && <div className="directory-empty">播放列表还是空的。</div>}
@@ -943,6 +1025,12 @@ export default function App() {
                     role="row"
                     tabIndex={0}
                     onClick={() => openTrackDetail(track)}
+                    onDoubleClick={() => playTemporary(track)}
+                    onContextMenu={event => {
+                      event.preventDefault()
+                      if (activePlaylistId) void showTrackContextMenu(track, { playlistId: activePlaylistId })
+                    }}
+                    aria-label={`${track.title}，${trackSourceLabel(track.sourceId)}`}
                     onKeyDown={event => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
@@ -953,9 +1041,9 @@ export default function App() {
                     <span className="track-number">{track.id === currentTrackId ? '▶' : rowIndex + 1}</span>
                     <span className="track-name-cell">
                       <span className="track-name">{track.title}</span>
-                      <span className="track-artist">{track.sourceId === 'baidu' ? '百度网盘' : '本地'}</span>
+                      <span className="track-artist">{trackSourceLabel(track.sourceId)}</span>
                     </span>
-                    <span className="track-source">{track.sourceId}</span>
+                    <span className="track-source">{trackSourceLabel(track.sourceId)}</span>
                     <button
                       className="row-play-button"
                       aria-label={`播放 ${track.title}`}
@@ -986,6 +1074,11 @@ export default function App() {
                   key={track.id}
                   className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
                   onClick={() => playTemporary(track)}
+                  onContextMenu={event => {
+                    event.preventDefault()
+                    void showTrackContextMenu(track)
+                  }}
+                  aria-label={`${track.title}，本地`}
                   role="row"
                 >
                   <span className="track-number">{track.id === currentTrackId ? '▶' : index + 1}</span>
@@ -1021,10 +1114,12 @@ export default function App() {
               </p>
               <button
                 className="secondary-button"
-                onClick={() => void loginBaidu()}
-                disabled={isBaiduBusy || baiduStatus?.configured === false}
+                onClick={() => {
+                  setSettingsSection('connections')
+                  setMainView({ kind: 'settings' })
+                }}
               >
-                {isBaiduBusy ? '正在登录…' : '登录百度网盘'}
+                打开连接设置
               </button>
             </div>
           )}
@@ -1165,6 +1260,11 @@ export default function App() {
                           key={track.id}
                           className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
                           onClick={() => void playLibraryTrack(index)}
+                          onContextMenu={event => {
+                            event.preventDefault()
+                            void showTrackContextMenu(track)
+                          }}
+                          aria-label={`${track.title}，百度网盘`}
                           role="row"
                         >
                           <span className="track-number">{libraryOffset + index + 1}</span>
@@ -1182,61 +1282,21 @@ export default function App() {
             </div>
           )}
 
-          {isQuark && (!webdavStatus?.connected || webdavEditing) && (
-            <div className={`empty-state ${webdavEditing ? 'webdav-edit-state' : ''}`}>
+          {isQuark && !webdavStatus?.connected && (
+            <div className="empty-state">
               <div className="empty-art" aria-hidden="true"><span>W</span></div>
-              <h2>{webdavEditing ? '修改 WebDAV 连接' : '连接 WebDAV 网盘'}</h2>
-              <p>{webdavEditing ? '修改地址或账号后重新连接；密码留空会保留当前密码。' : '输入支持 WebDAV 的服务器地址与账号，即可浏览、导入并播放其中的音乐。'}</p>
-              <form
-                className="webdav-form"
-                onSubmit={event => {
-                  event.preventDefault()
-                  void saveWebdavConfig()
-                }}
-              >
-                <label className="import-label">
-                  服务器地址
-                  <input
-                    type="url"
-                    value={webdavConfigForm.url}
-                    onChange={event => setWebdavConfigForm(form => ({ ...form, url: event.target.value }))}
-                    placeholder="https://dav.example.com"
-                    required
-                  />
-                </label>
-                <label className="import-label">
-                  用户名
-                  <input
-                    type="text"
-                    value={webdavConfigForm.username}
-                    onChange={event => setWebdavConfigForm(form => ({ ...form, username: event.target.value }))}
-                    autoComplete="username"
-                  />
-                </label>
-                <label className="import-label">
-                  密码
-                  <input
-                    type="password"
-                    value={webdavConfigForm.password}
-                    onChange={event => setWebdavConfigForm(form => ({ ...form, password: event.target.value }))}
-                    autoComplete="current-password"
-                  />
-                </label>
-                <div className="webdav-form-actions">
-                  <button className="primary-button" type="submit" disabled={isWebdavBusy || !webdavConfigForm.url.trim()}>
-                    {isWebdavBusy ? '连接中…' : '保存并连接'}
-                  </button>
-                  {webdavEditing && (
-                    <button className="quiet-button" type="button" onClick={() => setWebdavEditing(false)} disabled={isWebdavBusy}>
-                      取消
-                    </button>
-                  )}
-                </div>
-              </form>
+              <h2>连接 WebDAV 网盘</h2>
+              <p>请在设置中填写服务器地址与账号，连接后即可浏览和导入音乐。</p>
+              <button className="secondary-button" onClick={() => {
+                setSettingsSection('connections')
+                setMainView({ kind: 'settings' })
+              }}>
+                打开连接设置
+              </button>
             </div>
           )}
 
-          {isQuark && webdavStatus?.connected && !webdavEditing && (
+          {isQuark && webdavStatus?.connected && (
             <div className="cloud-browser">
               <div className="content-tabs">
                 <button
@@ -1372,6 +1432,11 @@ export default function App() {
                           key={track.id}
                           className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
                           onClick={() => playLibraryTrack(index)}
+                          onContextMenu={event => {
+                            event.preventDefault()
+                            void showTrackContextMenu(track)
+                          }}
+                          aria-label={`${track.title}，WebDAV`}
                           role="row"
                         >
                           <span className="track-number">{libraryOffset + index + 1}</span>

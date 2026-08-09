@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  Menu,
   net,
   protocol,
   type OpenDialogOptions
@@ -11,6 +12,7 @@ import { basename, extname, join } from 'path'
 import { pathToFileURL } from 'url'
 import {
   IPC_CHANNELS,
+  OPEN_SETTINGS_CHANNEL,
   SYNC_PROGRESS_CHANNEL,
   UPDATE_STATUS_CHANNEL,
   type CloudEntry,
@@ -18,6 +20,8 @@ import {
   type PlaybackQueueState,
   type SyncProgress,
   type Track,
+  type TrackContextMenuAction,
+  type TrackContextMenuRequest,
   type UpdateSnapshot
 } from '../shared/ipc'
 import { AppUpdater } from './updater'
@@ -63,6 +67,34 @@ function getLibrary(): LibraryService {
 
 function emitSyncProgress(progress: SyncProgress): void {
   mainWindow?.webContents.send(SYNC_PROGRESS_CHANNEL, progress)
+}
+
+function installApplicationMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        {
+          label: '设置…',
+          accelerator: 'CmdOrCtrl+,',
+          click: () => mainWindow?.webContents.send(OPEN_SETTINGS_CHANNEL)
+        },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' }
+      ]
+    },
+    { role: 'editMenu' },
+    { role: 'windowMenu' }
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
 function createWindow(): void {
@@ -220,6 +252,40 @@ ipcMain.handle(IPC_CHANNELS.playlistRemoveTrack, (_event, playlistId: string, tr
   getLibrary().removeTrackFromPlaylist(playlistId, trackId)
 })
 
+ipcMain.handle(IPC_CHANNELS.trackContextMenu, (event, request: TrackContextMenuRequest) =>
+  new Promise<TrackContextMenuAction | null>(resolve => {
+    let selected: TrackContextMenuAction | null = null
+    const choose = (action: TrackContextMenuAction) => (): void => { selected = action }
+    const playlistItems: Electron.MenuItemConstructorOptions[] = request.playlists.length > 0
+      ? request.playlists.map(playlist => ({
+          label: playlist.name,
+          click: choose({ type: 'addToPlaylist', playlistId: playlist.id })
+        }))
+      : [{ label: '没有歌单', enabled: false }]
+    const template: Electron.MenuItemConstructorOptions[] = [
+      { label: '播放', click: choose({ type: 'play' }) },
+      { label: '下一首播放', click: choose({ type: 'playNext' }) },
+      { label: '添加到播放列表', click: choose({ type: 'addToQueue' }) },
+      { label: '添加到歌单', submenu: playlistItems },
+      { type: 'separator' },
+      { label: '显示详情', click: choose({ type: 'showDetails' }) }
+    ]
+    if (request.canRemoveFromQueue || request.canRemoveFromPlaylist) {
+      template.push({ type: 'separator' })
+      if (request.canRemoveFromQueue) {
+        template.push({ label: '从播放列表移除', click: choose({ type: 'removeFromQueue' }) })
+      }
+      if (request.canRemoveFromPlaylist) {
+        template.push({ label: '从此歌单移除', click: choose({ type: 'removeFromPlaylist' }) })
+      }
+    }
+    Menu.buildFromTemplate(template).popup({
+      window: BrowserWindow.fromWebContents(event.sender) ?? undefined,
+      callback: () => resolve(selected)
+    })
+  })
+)
+
 ipcMain.handle(IPC_CHANNELS.updateGetStatus, () => appUpdater.getSnapshot())
 ipcMain.handle(IPC_CHANNELS.updateCheck, () => appUpdater.checkForUpdates())
 ipcMain.handle(IPC_CHANNELS.updateDownload, () => appUpdater.downloadUpdate())
@@ -227,6 +293,7 @@ ipcMain.handle(IPC_CHANNELS.updateInstall, () => appUpdater.quitAndInstall())
 
 app.whenReady().then(() => {
   getLibrary()
+  installApplicationMenu()
 
   protocol.handle('app-media', request => {
     const id = new URL(request.url).hostname

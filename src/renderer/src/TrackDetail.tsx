@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Track, TrackDetail as TrackDetailData } from '@shared/ipc'
+import { trackSourceLabel } from './sourceLabels'
 
 interface TrackDetailProps {
   track: Track
@@ -20,13 +21,6 @@ function formatSize(bytes: number): string {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`
-}
-
-function sourceLabel(sourceId: string): string {
-  if (sourceId === 'local') return '本地音乐'
-  if (sourceId === 'baidu') return '百度网盘'
-  if (sourceId === 'quark') return '夸克网盘'
-  return sourceId
 }
 
 function extensionOf(path: string): string {
@@ -91,7 +85,7 @@ export default function TrackDetail({ track, onBack, onPlay }: TrackDetailProps)
         <div className="detail-cover" aria-hidden="true">♪</div>
         <div className="detail-info">
           <h2>{track.title}</h2>
-          <p>{track.artist ?? sourceLabel(track.sourceId)}</p>
+          <p>{track.artist ?? trackSourceLabel(track.sourceId)}</p>
           <button className="primary-button" onClick={onPlay}>播放</button>
         </div>
       </div>
@@ -103,7 +97,7 @@ export default function TrackDetail({ track, onBack, onPlay }: TrackDetailProps)
         </div>
         <div className="detail-meta-row">
           <dt>来源</dt>
-          <dd>{sourceLabel(track.sourceId)}</dd>
+          <dd>{trackSourceLabel(track.sourceId)}</dd>
         </div>
         <div className="detail-meta-row">
           <dt>文件 ID</dt>
