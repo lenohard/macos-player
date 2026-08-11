@@ -18,6 +18,24 @@ function normalizeBaseUrl(url: string): string {
   return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed
 }
 
+function providerFromId(id: string): string | undefined {
+  const slash = id.indexOf('/')
+  if (slash > 0) return id.slice(0, slash)
+  return undefined
+}
+
+function parseModelItem(item: Record<string, unknown> & { id: string }): AiModelInfo {
+  const provider =
+    (typeof item.owned_by === 'string' && item.owned_by.trim() ? item.owned_by : undefined) ??
+    providerFromId(item.id)
+
+  return {
+    id: item.id,
+    name: typeof item.name === 'string' ? item.name : undefined,
+    provider
+  }
+}
+
 /**
  * 大模型接入配置与模型列表。
  * - 非敏感配置存 userData/ai-config.json
@@ -112,12 +130,12 @@ export class AiService {
       throw new Error(`HTTP ${response.status}${body ? `：${body.slice(0, 300)}` : ''}`)
     }
 
-    const json = (await response.json()) as { data?: Array<{ id?: string }> }
-    const ids = (json.data ?? []).map(item => item.id).filter((id): id is string => Boolean(id))
-    if (ids.length === 0) throw new Error('响应中没有模型列表（data[].id）。')
-    return ids
-      .sort((a, b) => a.localeCompare(b))
-      .map(id => ({ id }))
+    const json = (await response.json()) as { data?: Array<Record<string, unknown>> }
+    const items = (json.data ?? []).filter(item => typeof item.id === 'string') as Array<
+      Record<string, unknown> & { id: string }
+    >
+    if (items.length === 0) throw new Error('响应中没有模型列表（data[].id）。')
+    return items.sort((a, b) => a.id.localeCompare(b.id)).map(item => parseModelItem(item))
   }
 
   async testConnection(): Promise<AiTestResult> {

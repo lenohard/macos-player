@@ -21,11 +21,26 @@ const REASONING_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'high', label: '高' }
 ]
 
-function providerOf(modelId: string): string {
-  const slash = modelId.indexOf('/')
-  if (slash > 0) return modelId.slice(0, slash)
-  const dash = modelId.indexOf('-')
-  return dash > 0 ? modelId.slice(0, dash) : modelId
+const ENDPOINT_PATHS: Record<AiProtocol, string> = {
+  chat: '/chat/completions',
+  response: '/responses',
+  message: '/messages'
+}
+
+function providerOf(model: AiModelInfo | string): string {
+  if (typeof model !== 'string') {
+    if (model.provider) return model.provider
+    return providerOf(model.id)
+  }
+  const slash = model.indexOf('/')
+  if (slash > 0) return model.slice(0, slash)
+  const dash = model.indexOf('-')
+  return dash > 0 ? model.slice(0, dash) : model
+}
+
+function fullRequestUrl(baseUrl: string, protocol: AiProtocol): string {
+  const normalized = (baseUrl.trim() || DEFAULT_URLS[protocol]).replace(/\/$/, '')
+  return `${normalized}${ENDPOINT_PATHS[protocol]}`
 }
 
 export default function AiSettings() {
@@ -38,6 +53,7 @@ export default function AiSettings() {
   const [savedConfig, setSavedConfig] = useState<AiConfig | null>(null)
   const [hasApiKey, setHasApiKey] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  const [configError, setConfigError] = useState<string | null>(null)
 
   const [models, setModels] = useState<AiModelInfo[]>([])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
@@ -46,10 +62,11 @@ export default function AiSettings() {
 
   const [isTesting, setIsTesting] = useState(false)
   const [testResult, setTestResult] = useState<AiTestResult | null>(null)
-  const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
+  const [showApiKey, setShowApiKey] = useState(false)
 
   const baseUrlTouched = useRef(false)
+  const statusTimer = useRef<number | undefined>(undefined)
 
   const dirty = useMemo(
     () =>
@@ -61,54 +78,49 @@ export default function AiSettings() {
       apiKey.trim() !== '',
     [protocol, baseUrl, model, reasoningEffort, apiKey, savedConfig]
   )
+  const apiKeyConfigured = hasApiKey || apiKey.trim() !== ''
 
   useEffect(() => {
-    void window.api.aiGetConfig().then(config => {
-      setProtocol(config.protocol)
-      setBaseUrl(config.baseUrl || DEFAULT_URLS[config.protocol])
-      setModel(config.model)
-      setReasoningEffort(config.reasoningEffort)
-      setHasApiKey(config.hasApiKey)
-      setSavedConfig(config)
-      setLoaded(true)
-    })
+    void window.api.aiGetConfig()
+      .then(config => {
+        const normalizedBaseUrl = config.baseUrl || DEFAULT_URLS[config.protocol]
+        setProtocol(config.protocol)
+        setBaseUrl(normalizedBaseUrl)
+        setModel(config.model)
+        setReasoningEffort(config.reasoningEffort)
+        setHasApiKey(config.hasApiKey)
+        setSavedConfig({ ...config, baseUrl: normalizedBaseUrl })
+        setLoaded(true)
+      })
+      .catch(error => {
+        setConfigError(error instanceof Error ? error.message : String(error))
+        setLoaded(true)
+      })
   }, [])
 
   const displayModels = useMemo(() => {
     const query = searchText.trim().toLowerCase()
     if (!query) return models
     return models.filter(m =>
-      m.id.toLowerCase().includes(query) || providerOf(m.id).toLowerCase().includes(query)
+      m.id.toLowerCase().includes(query) ||
+      (m.name?.toLowerCase().includes(query) ?? false) ||
+      providerOf(m).toLowerCase().includes(query)
     )
   }, [models, searchText])
 
-  const fetchModels = useCallback(async (): Promise<void> => {
-    setIsLoadingModels(true)
-    setModelError(null)
-    try {
-      setModels(await window.api.aiFetchModels())
-    } catch (error) {
-      setModelError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setIsLoadingModels(false)
-    }
+  const requestUrl = useMemo(
+    () => fullRequestUrl(baseUrl, protocol),
+    [baseUrl, protocol]
+  )
+
+  const flashStatus = useCallback((message: string): void => {
+    setSaveStatus(message)
+    if (statusTimer.current !== undefined) window.clearTimeout(statusTimer.current)
+    statusTimer.current = window.setTimeout(() => setSaveStatus(null), 1600)
   }, [])
 
-  const runTest = useCallback(async (): Promise<void> => {
-    setIsTesting(true)
-    setTestResult(null)
-    try {
-      setTestResult(await window.api.aiTestConnection())
-    } catch (error) {
-      setTestResult({ ok: false, message: error instanceof Error ? error.message : String(error) })
-    } finally {
-      setIsTesting(false)
-    }
-  }, [])
-
-  const save = useCallback(async (): Promise<void> => {
-    setIsSaving(true)
-    setSaveStatus(null)
+  const saveNow = useCallback(async (): Promise<AiConfig | null> => {
+    setSaveStatus('保存中…')
     try {
       const config: AiConfig = {
         protocol,
@@ -119,21 +131,82 @@ export default function AiSettings() {
         hasApiKey
       }
       const saved = await window.api.aiSaveConfig(config)
+      setProtocol(saved.protocol)
+      setBaseUrl(saved.baseUrl)
+      setModel(saved.model)
+      setReasoningEffort(saved.reasoningEffort)
       setHasApiKey(saved.hasApiKey)
       setApiKey('')
       setSavedConfig(saved)
-      setSaveStatus('已保存 ✓')
       setTestResult(null)
+      flashStatus('已保存 ✓')
+      return saved
     } catch (error) {
       setSaveStatus(`保存失败：${error instanceof Error ? error.message : String(error)}`)
-    } finally {
-      setIsSaving(false)
+      return null
     }
-  }, [protocol, baseUrl, apiKey, model, reasoningEffort])
+  }, [protocol, baseUrl, apiKey, model, reasoningEffort, hasApiKey, flashStatus])
+
+  useEffect(() => {
+    if (!loaded || !dirty || configError) return
+    const timer = window.setTimeout(() => void saveNow(), 600)
+    return () => window.clearTimeout(timer)
+  }, [loaded, dirty, configError, saveNow])
+
+  const fetchModels = useCallback(async (): Promise<void> => {
+    setModelError(null)
+    let config = savedConfig
+    if (dirty) {
+      const saved = await saveNow()
+      if (!saved) {
+        setModelError('配置保存失败，无法获取模型列表。')
+        return
+      }
+      config = saved
+    }
+    if (!config?.hasApiKey) {
+      setModelError('请先填写 API Key，再获取模型列表。')
+      return
+    }
+
+    setIsLoadingModels(true)
+    try {
+      setModels(await window.api.aiFetchModels())
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsLoadingModels(false)
+    }
+  }, [dirty, saveNow, savedConfig])
+
+  const runTest = useCallback(async (): Promise<void> => {
+    setTestResult(null)
+    let config = savedConfig
+    if (dirty) {
+      const saved = await saveNow()
+      if (!saved) {
+        setTestResult({ ok: false, message: '配置保存失败，无法测试连接。' })
+        return
+      }
+      config = saved
+    }
+    if (!config?.hasApiKey) {
+      setTestResult({ ok: false, message: '请先填写 API Key，再测试连接。' })
+      return
+    }
+
+    setIsTesting(true)
+    try {
+      setTestResult(await window.api.aiTestConnection())
+    } catch (error) {
+      setTestResult({ ok: false, message: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setIsTesting(false)
+    }
+  }, [dirty, saveNow, savedConfig])
 
   function switchProtocol(next: AiProtocol): void {
     setProtocol(next)
-    // 若用户没改过 URL，则跟随协议切换默认值
     if (!baseUrlTouched.current) setBaseUrl(DEFAULT_URLS[next])
     setTestResult(null)
   }
@@ -142,35 +215,14 @@ export default function AiSettings() {
     <div className="library-panel ai-settings">
       <div className="panel-header-row">
         <p className="panel-title">大模型接入</p>
-        <button className="primary-button" onClick={() => void save()} disabled={isSaving || !dirty || !loaded}>
-          {isSaving ? '保存中…' : '保存配置'}
-        </button>
+        {saveStatus && (
+          <span className={saveStatus.startsWith('保存失败') ? 'inline-error' : 'ai-save-ok'}>{saveStatus}</span>
+        )}
       </div>
-      {saveStatus && <div className={saveStatus.startsWith('保存失败') ? 'inline-error' : 'ai-save-ok'}>{saveStatus}</div>}
+      {configError && <div className="inline-error">读取 AI 配置失败：{configError}</div>}
 
-      {/* Connection */}
       <div className="ai-card">
         <p className="ai-card-title">连接</p>
-
-        <div className="ai-field">
-          <span className="ai-field-label">协议</span>
-          <div className="ai-protocols">
-            {PROTOCOLS.map(option => (
-              <button
-                key={option.value}
-                type="button"
-                className={`ai-protocol ${protocol === option.value ? 'active' : ''}`}
-                onClick={() => switchProtocol(option.value)}
-                title={option.hint}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          <span className="ai-field-note">
-            {PROTOCOLS.find(option => option.value === protocol)?.hint}
-          </span>
-        </div>
 
         <div className="ai-field">
           <span className="ai-field-label">Base URL</span>
@@ -191,21 +243,50 @@ export default function AiSettings() {
               </button>
             )}
           </div>
-          <span className="ai-field-note">模型列表与调用统一基于 {baseUrl.trim() || DEFAULT_URLS[protocol]}</span>
+          <span className="ai-field-note ai-endpoint-note">实际请求：{requestUrl}</span>
+        </div>
+
+        <div className="ai-field">
+          <span className="ai-field-label">协议</span>
+          <select
+            value={protocol}
+            onChange={event => switchProtocol(event.target.value as AiProtocol)}
+          >
+            {PROTOCOLS.map(option => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <span className="ai-field-note">
+            {PROTOCOLS.find(option => option.value === protocol)?.hint}
+          </span>
         </div>
 
         <div className="ai-field">
           <span className="ai-field-label">API Key</span>
-          <input
-            type="password"
-            value={apiKey}
-            placeholder={hasApiKey ? '已保存密钥 · 留空保持不变' : '粘贴你的 API Key…'}
-            onChange={event => setApiKey(event.target.value)}
-            spellCheck={false}
-            autoComplete="off"
-          />
-          <span className={`ai-field-note ${hasApiKey ? '' : 'ai-warn'}`}>
-            {hasApiKey ? '已使用系统钥匙串安全保存。' : '尚未设置 API Key。'}
+          <div className="ai-input-row">
+            <input
+              type={showApiKey ? 'text' : 'password'}
+              value={apiKey}
+              placeholder={hasApiKey ? '已保存密钥 · 留空保持不变' : '粘贴你的 API Key…'}
+              onChange={event => setApiKey(event.target.value)}
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              className="quiet-button"
+              onClick={() => setShowApiKey(value => !value)}
+              aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+            >
+              {showApiKey ? '隐藏' : '显示'}
+            </button>
+          </div>
+          <span className={`ai-field-note ${apiKeyConfigured ? '' : 'ai-warn'}`}>
+            {hasApiKey
+              ? '已使用系统钥匙串安全保存。留空保存会保留当前密钥。'
+              : apiKey.trim()
+                ? '已填写，稍后会自动保存。'
+                : '尚未设置 API Key。'}
           </span>
         </div>
 
@@ -221,32 +302,18 @@ export default function AiSettings() {
         </div>
       </div>
 
-      {/* Model */}
       <div className="ai-card">
         <p className="ai-card-title">模型</p>
         <div className="ai-field">
           <span className="ai-field-label">当前模型</span>
-          <div className="ai-input-row">
-            <input
-              type="text"
-              value={model}
-              placeholder="例如 gpt-4o-mini / claude-3-5-haiku-latest"
-              onChange={event => setModel(event.target.value)}
-              spellCheck={false}
-            />
-            {model && (
-              <button
-                className="quiet-button"
-                onClick={() => {
-                  void navigator.clipboard.writeText(model)
-                  setSaveStatus('模型 ID 已复制')
-                }}
-              >
-                复制
-              </button>
-            )}
-          </div>
-          <span className="ai-field-note">可在下方模型浏览器中点击选用，或手动输入。</span>
+          <input
+            type="text"
+            value={model}
+            placeholder="例如 gpt-4o-mini / claude-3-5-haiku-latest"
+            onChange={event => setModel(event.target.value)}
+            spellCheck={false}
+          />
+          <span className="ai-field-note">可在下方列表中点击选用，或手动输入。</span>
         </div>
 
         <div className="ai-field">
@@ -258,14 +325,10 @@ export default function AiSettings() {
           </select>
           <span className="ai-field-note">仅对支持推理的模型生效。</span>
         </div>
-      </div>
 
-      {/* Model browser */}
-      <div className="ai-card">
-        <div className="ai-card-header">
-          <p className="ai-card-title">模型浏览器</p>
+        <div className="ai-field">
+          <span className="ai-field-label">模型列表</span>
           <div className="ai-browser-controls">
-            {models.length > 0 && <span className="ai-field-note">{displayModels.length} / {models.length} 个</span>}
             <input
               type="text"
               value={searchText}
@@ -273,35 +336,40 @@ export default function AiSettings() {
               onChange={event => setSearchText(event.target.value)}
               spellCheck={false}
             />
-            <button className="quiet-button" onClick={() => void fetchModels()} disabled={isLoadingModels}>
+            <button className="quiet-button" onClick={() => void fetchModels()} disabled={isLoadingModels || !loaded}>
               {isLoadingModels ? '加载中…' : models.length > 0 ? '刷新' : '获取模型列表'}
             </button>
+            {models.length > 0 && <span className="ai-field-note ai-model-count">{displayModels.length} / {models.length} 个</span>}
           </div>
+
+          {modelError && <div className="inline-error">{modelError}</div>}
+
+          {models.length === 0 && !isLoadingModels && !modelError && (
+            <p className="ai-field-note">
+              {hasApiKey
+                ? `点击“获取模型列表”从 ${baseUrl.trim() || DEFAULT_URLS[protocol]}/models 拉取。`
+                : '填写 API Key 后即可获取模型列表。'}
+            </p>
+          )}
+
+          {displayModels.length > 0 && (
+            <div className="ai-model-list">
+              {displayModels.map(item => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`ai-model-row ${item.id === model ? 'active' : ''}`}
+                  onClick={() => setModel(item.id)}
+                  title={`选用 ${item.id}`}
+                >
+                  <span className="ai-model-check">{item.id === model ? '✓' : ''}</span>
+                  <span className="ai-model-id">{item.id}</span>
+                  <span className="ai-model-provider">{providerOf(item)}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
-
-        {modelError && <div className="inline-error">{modelError}</div>}
-
-        {models.length === 0 && !isLoadingModels && !modelError && (
-          <p className="ai-field-note">点击“获取模型列表”从 {baseUrl.trim() || DEFAULT_URLS[protocol]}/models 拉取。</p>
-        )}
-
-        {displayModels.length > 0 && (
-          <div className="ai-model-list">
-            {displayModels.map(item => (
-              <button
-                key={item.id}
-                type="button"
-                className={`ai-model-row ${item.id === model ? 'active' : ''}`}
-                onClick={() => setModel(item.id)}
-                title={`选用 ${item.id}`}
-              >
-                <span className="ai-model-check">{item.id === model ? '✓' : ''}</span>
-                <span className="ai-model-id">{item.id}</span>
-                <span className="ai-model-provider">{providerOf(item.id)}</span>
-              </button>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   )

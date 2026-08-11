@@ -196,6 +196,9 @@ export interface AiConfig {
 
 export interface AiModelInfo {
   id: string
+  name?: string
+  /** 上游 provider，如 anthropic / opencode；网关未返回时从 id 前缀推断 */
+  provider?: string
 }
 
 export interface AiTestResult {
