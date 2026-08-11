@@ -18,6 +18,19 @@ interface PlayerBarProps {
   onOpenDetail(): void
 }
 
+// 文本类输入框（搜索、歌单命名等）里不应被空格劫持；range 滑杆等控件除外
+function isTextInput(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tag = target.tagName
+  if (tag === 'TEXTAREA' || tag === 'SELECT') return true
+  if (tag === 'INPUT') {
+    const type = (target as HTMLInputElement).type
+    return !['range', 'checkbox', 'radio'].includes(type)
+  }
+  return false
+}
+
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
   const minutes = Math.floor(seconds / 60)
@@ -73,6 +86,22 @@ export default function PlayerBar({
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume
   }, [volume])
+
+  // 窗口在前台时，空格键全局切换播放/暂停（输入框内不劫持）
+  const toggleRef = useRef(togglePlayback)
+  toggleRef.current = togglePlayback
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.code !== 'Space' || event.repeat) return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      if (isTextInput(event.target)) return
+      event.preventDefault()
+      event.stopPropagation()
+      void toggleRef.current()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [])
 
   async function togglePlayback(): Promise<void> {
     const audio = audioRef.current
