@@ -45,6 +45,7 @@ Do not commit `node_modules/`, `out/`, or `*.tsbuildinfo`.
 - `library.ts` — `LibraryService`: paginated tracks, playlists, `resolveMedia(id)`.
 - `baidu.ts` — OAuth popup, directory listing, streaming proxy (Range for seek).
 - `baidu-sync.ts` — BFS recursive scan, bulk upsert, soft-delete unseen tracks, playlist link per import root.
+- `ai.ts` — `AiService`: LLM provider config + model list. Non-secret config in `userData/ai-config.json`; API key encrypted via `safeStorage` → `userData/credentials/ai-key.bin` (same as Baidu token). Models endpoint `{baseUrl}/models`; `message` protocol uses `x-api-key` + `anthropic-version`, others use `Bearer`.
 
 ## Data model (SQLite)
 

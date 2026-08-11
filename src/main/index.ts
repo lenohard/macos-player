@@ -25,6 +25,7 @@ import {
   type UpdateSnapshot
 } from '../shared/ipc'
 import { AppUpdater } from './updater'
+import { AiService } from './ai'
 import { resyncBaiduDirectory, syncBaiduDirectory } from './baidu-sync'
 import { BaiduService } from './baidu'
 import { openLibraryDatabase } from './library-db'
@@ -53,6 +54,7 @@ let mainWindow: BrowserWindow | null = null
 let library: LibraryService | null = null
 const baiduService = new BaiduService()
 const webdavService = new WebDAVService()
+const aiService = new AiService()
 
 function emitUpdateStatus(snapshot: UpdateSnapshot): void {
   mainWindow?.webContents.send(UPDATE_STATUS_CHANNEL, snapshot)
@@ -290,6 +292,11 @@ ipcMain.handle(IPC_CHANNELS.updateGetStatus, () => appUpdater.getSnapshot())
 ipcMain.handle(IPC_CHANNELS.updateCheck, () => appUpdater.checkForUpdates())
 ipcMain.handle(IPC_CHANNELS.updateDownload, () => appUpdater.downloadUpdate())
 ipcMain.handle(IPC_CHANNELS.updateInstall, () => appUpdater.quitAndInstall())
+
+ipcMain.handle(IPC_CHANNELS.aiGetConfig, () => aiService.getConfig())
+ipcMain.handle(IPC_CHANNELS.aiSaveConfig, (_event, config) => aiService.saveConfig(config))
+ipcMain.handle(IPC_CHANNELS.aiFetchModels, () => aiService.fetchModels())
+ipcMain.handle(IPC_CHANNELS.aiTestConnection, () => aiService.testConnection())
 
 app.whenReady().then(() => {
   getLibrary()

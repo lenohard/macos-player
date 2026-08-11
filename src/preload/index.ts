@@ -4,6 +4,9 @@ import {
   OPEN_SETTINGS_CHANNEL,
   SYNC_PROGRESS_CHANNEL,
   UPDATE_STATUS_CHANNEL,
+  type AiConfig,
+  type AiModelInfo,
+  type AiTestResult,
   type BaiduAuthStatus,
   type BaiduImportResult,
   type CloudEntry,
@@ -87,7 +90,12 @@ const api: IPCApi = {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: UpdateSnapshot) => listener(snapshot)
     ipcRenderer.on(UPDATE_STATUS_CHANNEL, handler)
     return () => ipcRenderer.removeListener(UPDATE_STATUS_CHANNEL, handler)
-  }
+  },
+  aiGetConfig: (): Promise<AiConfig> => ipcRenderer.invoke(IPC_CHANNELS.aiGetConfig),
+  aiSaveConfig: (config: AiConfig): Promise<AiConfig> =>
+    ipcRenderer.invoke(IPC_CHANNELS.aiSaveConfig, config),
+  aiFetchModels: (): Promise<AiModelInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.aiFetchModels),
+  aiTestConnection: (): Promise<AiTestResult> => ipcRenderer.invoke(IPC_CHANNELS.aiTestConnection)
 }
 
 contextBridge.exposeInMainWorld('api', api)

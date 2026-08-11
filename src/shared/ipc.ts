@@ -35,7 +35,11 @@ export const IPC_CHANNELS = {
   updateCheck: 'update:check',
   updateDownload: 'update:download',
   updateInstall: 'update:install',
-  trackContextMenu: 'track:contextMenu'
+  trackContextMenu: 'track:contextMenu',
+  aiGetConfig: 'ai:getConfig',
+  aiSaveConfig: 'ai:saveConfig',
+  aiFetchModels: 'ai:fetchModels',
+  aiTestConnection: 'ai:testConnection'
 } as const
 
 export const OPEN_SETTINGS_CHANNEL = 'app:openSettings'
@@ -177,6 +181,28 @@ export type TrackContextMenuAction =
   | { type: 'play' | 'playNext' | 'addToQueue' | 'showDetails' | 'removeFromQueue' | 'removeFromPlaylist' }
   | { type: 'addToPlaylist'; playlistId: string }
 
+export type AiProtocol = 'chat' | 'response' | 'message'
+
+export interface AiConfig {
+  protocol: AiProtocol
+  baseUrl: string
+  /** API key 由主进程 safeStorage 加密保存，返回时始终为空串 */
+  apiKey: string
+  /** 是否已保存过 API key（用于 UI 显示“已保存 / 未设置”） */
+  hasApiKey: boolean
+  model: string
+  reasoningEffort: string
+}
+
+export interface AiModelInfo {
+  id: string
+}
+
+export interface AiTestResult {
+  ok: boolean
+  message: string
+}
+
 export interface IPCApi {
   queueSave(state: PlaybackQueueState): Promise<void>
   queueLoad(): Promise<PlaybackQueueState | null>
@@ -216,6 +242,10 @@ export interface IPCApi {
   trackContextMenu(request: TrackContextMenuRequest): Promise<TrackContextMenuAction | null>
   onOpenSettings(listener: () => void): () => void
   onUpdateStatus(listener: (snapshot: UpdateSnapshot) => void): () => void
+  aiGetConfig(): Promise<AiConfig>
+  aiSaveConfig(config: AiConfig): Promise<AiConfig>
+  aiFetchModels(): Promise<AiModelInfo[]>
+  aiTestConnection(): Promise<AiTestResult>
 }
 
 declare global {

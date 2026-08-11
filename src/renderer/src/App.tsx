@@ -148,7 +148,7 @@ export default function App() {
   const [webdavRoots, setWebdavRoots] = useState<LibraryRootInfo[]>([])
   const [isWebdavBusy, setIsWebdavBusy] = useState(false)
   const [webdavPanel, setWebdavPanel] = useState<CloudPanel>('browse')
-  const [settingsSection, setSettingsSection] = useState<'connections' | 'about'>('connections')
+  const [settingsSection, setSettingsSection] = useState<'connections' | 'ai' | 'about'>('connections')
   const [webdavConfigForm, setWebdavConfigForm] = useState({ url: '', username: '', password: '' })
   const [webdavImportName, setWebdavImportName] = useState('')
   const queueRowRef = useRef<HTMLButtonElement | null>(null)
@@ -872,7 +872,7 @@ export default function App() {
             </p>
             <h1>
               {mainView.kind === 'settings'
-                ? settingsSection === 'connections' ? '连接' : '关于 corner'
+                ? settingsSection === 'connections' ? '连接' : settingsSection === 'ai' ? '大模型' : '关于 corner'
                 : mainView.kind === 'queue'
                   ? '当前播放'
                   : isPlaylistView

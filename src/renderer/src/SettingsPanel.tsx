@@ -1,8 +1,9 @@
 import type { FormEvent } from 'react'
 import type { BaiduAuthStatus, UpdateSnapshot, WebDAVStatus } from '@shared/ipc'
 import AboutPanel from './AboutPanel'
+import AiSettings from './AiSettings'
 
-type SettingsSection = 'connections' | 'about'
+type SettingsSection = 'connections' | 'ai' | 'about'
 
 interface Props {
   section: SettingsSection
@@ -46,6 +47,12 @@ export default function SettingsPanel(props: Props) {
           onClick={() => props.onSectionChange('connections')}
         >
           连接
+        </button>
+        <button
+          className={props.section === 'ai' ? 'active' : ''}
+          onClick={() => props.onSectionChange('ai')}
+        >
+          大模型
         </button>
         <button
           className={props.section === 'about' ? 'active' : ''}
@@ -142,6 +149,8 @@ export default function SettingsPanel(props: Props) {
               </form>
             </section>
           </div>
+        ) : props.section === 'ai' ? (
+          <AiSettings />
         ) : (
           <AboutPanel
             snapshot={props.updateSnapshot}
