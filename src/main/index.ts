@@ -33,6 +33,7 @@ import { LibraryService } from './library'
 import { fetchWithElectronNet, isAsciiHeaderValue } from './media-net'
 import { WebDAVService } from './webdav'
 import { syncWebDAVDirectory, resyncWebDAVDirectory } from './webdav-sync'
+import { startCliServer, stopCliServer } from './cli-server'
 
 const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.wav'])
 
@@ -301,6 +302,7 @@ ipcMain.handle(IPC_CHANNELS.aiTestConnection, () => aiService.testConnection())
 
 app.whenReady().then(() => {
   getLibrary()
+  startCliServer(getLibrary(), () => mainWindow)
   installApplicationMenu()
 
   protocol.handle('app-media', request => {
@@ -324,7 +326,14 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform !== 'darwin') {
+    stopCliServer()
+    app.quit()
+  }
+})
+
+app.on('before-quit', () => {
+  stopCliServer()
 })
 
 app.on('activate', () => {

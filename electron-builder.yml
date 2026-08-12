@@ -16,6 +16,9 @@ files:
   - '!tsconfig*.json'
   - '!electron-builder.yml'
   - '!**/{.DS_Store,Thumbs.db}'
+extraResources:
+  - from: scripts/corner-cli.mjs
+    to: corner-cli.mjs
 mac:
   category: public.app-category.music
   icon: build/icon.icns

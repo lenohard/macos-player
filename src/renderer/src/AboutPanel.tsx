@@ -30,10 +30,28 @@ interface AboutPanelProps {
 }
 
 export default function AboutPanel({ snapshot, busy, onCheck, onDownload, onInstall }: AboutPanelProps) {
+  const cliCommand = 'ln -sf /Applications/corner.app/Contents/Resources/corner-cli.mjs /usr/local/bin/corner'
+
   return (
     <div className="library-panel about-panel">
       <p className="panel-title">corner · v{snapshot.appVersion}</p>
       <p className="about-lead">本地与网盘音乐播放器。更新从 GitHub Releases 拉取（需已安装正式版）。</p>
+
+      <div className="about-cli">
+        <p className="about-cli-title">命令行安装</p>
+        <p className="about-cli-desc">安装后可用 <code>corner</code> 命令控制播放。</p>
+        <div className="about-cli-cmd">
+          <code>{cliCommand}</code>
+          <button
+            className="quiet-button"
+            onClick={() => {
+              void navigator.clipboard.writeText(cliCommand)
+            }}
+          >
+            复制
+          </button>
+        </div>
+      </div>
 
       <div className="about-update">
         <p className="about-status" role="status">

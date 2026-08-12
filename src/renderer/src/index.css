@@ -473,6 +473,44 @@ input:focus-visible {
   gap: 8px;
 }
 
+.about-cli {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.about-cli-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.about-cli-desc {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.about-cli-cmd {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.about-cli-cmd code {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--surface-elevated);
+  font-size: 12px;
+  user-select: all;
+  word-break: break-all;
+}
+
 .sidebar-settings {
   margin-top: auto;
 }

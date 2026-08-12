@@ -9,6 +9,7 @@ interface PlayerBarProps {
   shuffle: boolean
   repeatMode: 'off' | 'all' | 'one'
   playlists: PlaylistSummary[]
+  remoteTogglePlay: number
   onShuffleChange(shuffle: boolean): void
   onRepeatChange(): void
   onTemporaryEnded(): void
@@ -45,6 +46,7 @@ export default function PlayerBar({
   shuffle,
   repeatMode,
   playlists,
+  remoteTogglePlay,
   onShuffleChange,
   onRepeatChange,
   onTemporaryEnded,
@@ -87,9 +89,14 @@ export default function PlayerBar({
     if (audioRef.current) audioRef.current.volume = volume
   }, [volume])
 
-  // 窗口在前台时，空格键全局切换播放/暂停（输入框内不劫持）
+  // Remote toggle play from CLI
   const toggleRef = useRef(togglePlayback)
   toggleRef.current = togglePlayback
+  useEffect(() => {
+    if (remoteTogglePlay > 0) void toggleRef.current()
+  }, [remoteTogglePlay])
+
+  // 窗口在前台时，空格键全局切换播放/暂停（输入框内不劫持）
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.code !== 'Space' || event.repeat) return

@@ -152,6 +152,7 @@ export default function App() {
   const [webdavConfigForm, setWebdavConfigForm] = useState({ url: '', username: '', password: '' })
   const [webdavImportName, setWebdavImportName] = useState('')
   const queueRowRef = useRef<HTMLButtonElement | null>(null)
+  const [remoteTogglePlay, setRemoteTogglePlay] = useState(0)
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot>({
     appVersion: '…',
     enabled: false,
@@ -270,6 +271,27 @@ export default function App() {
     setSettingsSection('connections')
     setMainView({ kind: 'settings' })
   }), [])
+
+  useEffect(() => window.api.onRemoteCommand((command) => {
+    switch (command.action) {
+      case 'play':
+        replaceQueueAndPlay(command.tracks)
+        break
+      case 'playSingle':
+        playTemporary(command.track)
+        break
+      case 'next':
+        playNext()
+        break
+      case 'prev':
+        playPrevious()
+        break
+      case 'togglePlay':
+        setRemoteTogglePlay(c => c + 1)
+        break
+    }
+  }), [])
+
 
   useEffect(() => {
     void window.api.queueLoad()
@@ -1475,6 +1497,7 @@ export default function App() {
         onTemporaryEnded={handleTemporaryEnded}
         onNext={playNext}
         onPrevious={playPrevious}
+        remoteTogglePlay={remoteTogglePlay}
         onAddToPlaylist={playlistId => void addCurrentTrackToPlaylist(playlistId)}
         onOpenDetail={() => {
           if (currentTrack) openTrackDetail(currentTrack)

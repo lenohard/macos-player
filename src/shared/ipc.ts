@@ -43,9 +43,17 @@ export const IPC_CHANNELS = {
   aiTestConnection: 'ai:testConnection'
 } as const
 
+export const PLAYBACK_REMOTE_COMMAND_CHANNEL = 'playback:remoteCommand'
 export const OPEN_SETTINGS_CHANNEL = 'app:openSettings'
 export const SYNC_PROGRESS_CHANNEL = 'library:syncProgress'
 export const UPDATE_STATUS_CHANNEL = 'update:status'
+
+export type RemoteCommand =
+  | { action: 'play'; tracks: Track[] }
+  | { action: 'playSingle'; track: Track }
+  | { action: 'next' }
+  | { action: 'prev' }
+  | { action: 'togglePlay' }
 
 export interface Track {
   id: string
@@ -253,6 +261,7 @@ export interface IPCApi {
   aiSaveConfig(config: AiConfig): Promise<AiConfig>
   aiFetchModels(): Promise<AiModelInfo[]>
   aiTestConnection(): Promise<AiTestResult>
+  onRemoteCommand(listener: (command: RemoteCommand) => void): () => void
 }
 
 declare global {

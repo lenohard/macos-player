@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC_CHANNELS,
   OPEN_SETTINGS_CHANNEL,
+  PLAYBACK_REMOTE_COMMAND_CHANNEL,
   SYNC_PROGRESS_CHANNEL,
   UPDATE_STATUS_CHANNEL,
   type AiConfig,
@@ -11,6 +12,7 @@ import {
   type BaiduImportResult,
   type CloudEntry,
   type IPCApi,
+  type RemoteCommand,
   type LibraryRootInfo,
   type LibrarySource,
   type PlaybackQueueState,
@@ -96,7 +98,12 @@ const api: IPCApi = {
   aiSaveConfig: (config: AiConfig): Promise<AiConfig> =>
     ipcRenderer.invoke(IPC_CHANNELS.aiSaveConfig, config),
   aiFetchModels: (): Promise<AiModelInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.aiFetchModels),
-  aiTestConnection: (): Promise<AiTestResult> => ipcRenderer.invoke(IPC_CHANNELS.aiTestConnection)
+  aiTestConnection: (): Promise<AiTestResult> => ipcRenderer.invoke(IPC_CHANNELS.aiTestConnection),
+  onRemoteCommand: (listener: (command: RemoteCommand) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, command: RemoteCommand) => listener(command)
+    ipcRenderer.on(PLAYBACK_REMOTE_COMMAND_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(PLAYBACK_REMOTE_COMMAND_CHANNEL, handler)
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)
