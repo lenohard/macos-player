@@ -143,6 +143,7 @@ Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by
 - **更新仅打包版**：`app.isPackaged` 为 false 时 UI 显示「开发模式不检查更新」，`checkForUpdates` 直接返回 snapshot，不要误报 error。
 - **`UpdateSnapshot`**：对 renderer 始终带 `appVersion`、`enabled`；内部 patch 用不含这两字段的 state，避免重复字段不一致。
 - **`package.json`**：`repository` 字段、`version` 与 git tag（如 `v0.0.2`）一致；发布前确认构建机有 **BAIDU_***（Vite `define` 打进 main bundle，不是运行时读 `.env`）。
+- **⚠️ 版本号同步（血泪教训）**：打 tag 前确认 `package.json#version` 已更新为对应版本号。若 `package.json` 版本号滞后，electron-builder 会构建旧版本并尝试发到旧 release，导致新 release 无 assets → auto-update 404。**打 tag 前必检**：`node -e "console.log(require('./package.json').version)"` 与 tag 后缀一致。
 - **BAIDU define 注入坑**：注入逻辑必须用 `process.env[key]?.trim() || fileEnv[key]?.trim() || ''`——若环境变量是**空字符串**，`??` 不回退 .env 文件，产物会注入空值（现象：播放正常但 UI 显示「请先配置 Client ID」）。
 - **百度「请先配置」误判**：若 `IPC_CHANNELS.baiduGetStatus` 未在主进程 `ipcMain.handle` 注册，renderer 的 `baiduGetStatus()` 会 reject，`.catch()` 会把状态设成 `configured: false`，文案与真未配置相同；播放仍可用（token 在 safeStorage）。新增/改 IPC 时按 `src/shared/ipc.ts` → main → preload → renderer 全链路核对。
 - **本地**：`npm run dist`（不上传）；**发布**：`npm run release` 或 push `v*.*.*` tag 触发 `.github/workflows/release-mac.yml`（`GH_TOKEN` = `GITHUB_TOKEN`）。
