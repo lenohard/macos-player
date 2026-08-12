@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BaiduAuthStatus,
   CloudEntry,
+  CloudSourceId,
   LibraryRootInfo,
   LibrarySource,
   PlaybackQueueState,
@@ -645,6 +646,30 @@ export default function App() {
     }
   }
 
+  async function downloadCloudEntry(sourceId: CloudSourceId, entry: CloudEntry): Promise<void> {
+    if (entry.isDirectory) return
+    const setBusy = sourceId === 'baidu' ? setIsBaiduBusy : setIsWebdavBusy
+    setBusy(true)
+    setError(null)
+    try {
+      await window.api.cloudDownload({ sourceId, entry })
+    } catch (reason) {
+      setError(messageFrom(reason, '下载文件失败'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function showCloudEntryContextMenu(sourceId: CloudSourceId, entry: CloudEntry): Promise<void> {
+    if (entry.isDirectory) return
+    try {
+      const action = await window.api.cloudEntryContextMenu({ sourceId, entry })
+      if (action?.type === 'download') await downloadCloudEntry(sourceId, entry)
+    } catch (reason) {
+      setError(messageFrom(reason, '无法打开文件菜单'))
+    }
+  }
+
   async function openBaiduEntry(entry: CloudEntry): Promise<void> {
     if (entry.isDirectory) {
       await loadBaiduDirectory(entry.path)
@@ -1255,6 +1280,10 @@ export default function App() {
                         key={entry.id}
                         className="track-row"
                         onClick={() => void openBaiduEntry(entry)}
+                        onContextMenu={event => {
+                          event.preventDefault()
+                          void showCloudEntryContextMenu('baidu', entry)
+                        }}
                         disabled={isBaiduBusy}
                         role="row"
                       >
@@ -1427,6 +1456,10 @@ export default function App() {
                         key={entry.id}
                         className="track-row"
                         onClick={() => void openWebdavEntry(entry)}
+                        onContextMenu={event => {
+                          event.preventDefault()
+                          void showCloudEntryContextMenu('quark', entry)
+                        }}
                         disabled={isWebdavBusy}
                         role="row"
                       >

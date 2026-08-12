@@ -1,3 +1,8 @@
+import { createWriteStream } from 'fs'
+import { unlink, rename } from 'fs/promises'
+import { Readable } from 'stream'
+import type { ReadableStream as NodeReadableStream } from 'stream/web'
+import { pipeline } from 'stream/promises'
 import { net } from 'electron'
 
 /** Node/Electron HTTP headers must be ByteStrings (Latin-1). */
@@ -9,6 +14,23 @@ export function isAsciiHeaderValue(value: string): boolean {
 }
 
 /** Outbound fetch for app-media proxy; never forwards renderer request headers. */
+export async function downloadResponseToFile(response: Response, destination: string): Promise<void> {
+  if (!response.ok) throw new Error(`下载请求失败（HTTP ${response.status}）`)
+  if (!response.body) throw new Error('下载请求没有返回文件内容。')
+
+  const temporaryPath = `${destination}.part`
+  try {
+    await pipeline(
+      Readable.fromWeb(response.body as unknown as NodeReadableStream<Uint8Array>),
+      createWriteStream(temporaryPath)
+    )
+    await rename(temporaryPath, destination)
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => undefined)
+    throw error
+  }
+}
+
 export function fetchWithElectronNet(
   url: string,
   headers: Record<string, string>

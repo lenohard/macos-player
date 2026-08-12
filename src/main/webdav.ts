@@ -2,6 +2,7 @@ import { app, net, safeStorage } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import type { CloudEntry, WebDAVConfig, WebDAVStatus } from '../shared/ipc'
+import { downloadResponseToFile } from './media-net'
 
 const configPath = () => join(app.getPath('userData'), 'credentials', 'webdav.bin')
 let config: WebDAVConfig | null = null
@@ -95,5 +96,8 @@ export class WebDAVService {
   async stream(path: string, request: Request): Promise<Response> {
     const range = request.headers.get('Range'); const response = await this.request(path, 'GET', range ? { Range: range } : undefined)
     return response
+  }
+  async download(path: string, destination: string): Promise<void> {
+    await downloadResponseToFile(await this.request(path, 'GET'), destination)
   }
 }

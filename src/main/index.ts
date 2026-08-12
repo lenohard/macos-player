@@ -17,7 +17,9 @@ import {
   OPEN_SETTINGS_CHANNEL,
   SYNC_PROGRESS_CHANNEL,
   UPDATE_STATUS_CHANNEL,
+  type CloudDownloadRequest,
   type CloudEntry,
+  type CloudEntryContextMenuAction,
   type LibrarySource,
   type PlaybackQueueState,
   type PlaybackState,
@@ -197,6 +199,44 @@ ipcMain.handle(IPC_CHANNELS.openLocalTracks, async (): Promise<Track[]> => {
   return result.filePaths
     .filter(filePath => AUDIO_EXTENSIONS.has(extname(filePath).toLowerCase()))
     .map(filePath => getLibrary().upsertLocalTrack(filePath))
+})
+
+ipcMain.handle(
+  IPC_CHANNELS.cloudEntryContextMenu,
+  (event, _request: CloudDownloadRequest) =>
+    new Promise<CloudEntryContextMenuAction | null>(resolve => {
+      let selected: CloudEntryContextMenuAction | null = null
+      Menu.buildFromTemplate([
+        { label: '直接下载到本机', click: () => { selected = { type: 'download' } } }
+      ]).popup({
+        window: BrowserWindow.fromWebContents(event.sender) ?? undefined,
+        callback: () => resolve(selected)
+      })
+    })
+)
+
+ipcMain.handle(IPC_CHANNELS.cloudDownload, async (event, request: CloudDownloadRequest): Promise<string | null> => {
+  if (request.entry.isDirectory) throw new Error('文件夹不能下载。')
+
+  const options: Electron.SaveDialogOptions = {
+    title: '下载文件',
+    defaultPath: basename(request.entry.name) || '下载文件',
+    buttonLabel: '保存'
+  }
+  const owner = BrowserWindow.fromWebContents(event.sender)
+  const result = owner
+    ? await dialog.showSaveDialog(owner, options)
+    : await dialog.showSaveDialog(options)
+  if (result.canceled || !result.filePath) return null
+
+  if (request.sourceId === 'baidu') {
+    await baiduService.download(request.entry.path, result.filePath)
+  } else if (request.sourceId === 'quark') {
+    await webdavService.download(request.entry.path, result.filePath)
+  } else {
+    throw new Error('不支持的云盘来源。')
+  }
+  return result.filePath
 })
 
 ipcMain.handle(IPC_CHANNELS.webdavGetStatus, async () => {

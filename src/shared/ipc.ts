@@ -12,6 +12,8 @@ export const IPC_CHANNELS = {
   baiduLogin: 'baidu:login',
   baiduLogout: 'baidu:logout',
   baiduListDirectory: 'baidu:listDirectory',
+  cloudEntryContextMenu: 'cloud:entryContextMenu',
+  cloudDownload: 'cloud:download',
   baiduCreateTrack: 'baidu:createTrack',
   baiduImportDirectory: 'baidu:importDirectory',
   baiduResyncDirectory: 'baidu:resyncDirectory',
@@ -136,6 +138,15 @@ export interface CloudEntry {
   modifiedAt: number
 }
 
+export type CloudSourceId = 'baidu' | 'quark'
+
+export interface CloudDownloadRequest {
+  sourceId: CloudSourceId
+  entry: CloudEntry
+}
+
+export type CloudEntryContextMenuAction = { type: 'download' }
+
 export interface PlaylistSummary {
   id: string
   name: string
@@ -242,6 +253,8 @@ export interface IPCApi {
   baiduLogin(): Promise<BaiduAuthStatus>
   baiduLogout(): Promise<BaiduAuthStatus>
   baiduListDirectory(path: string): Promise<CloudEntry[]>
+  cloudEntryContextMenu(request: CloudDownloadRequest): Promise<CloudEntryContextMenuAction | null>
+  cloudDownload(request: CloudDownloadRequest): Promise<string | null>
   baiduCreateTrack(entry: CloudEntry): Promise<Track>
   baiduImportDirectory(rootPath: string, playlistName: string): Promise<BaiduImportResult>
   baiduResyncDirectory(rootPath: string): Promise<BaiduImportResult>

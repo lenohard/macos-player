@@ -10,6 +10,8 @@ import {
   type AiTestResult,
   type BaiduAuthStatus,
   type BaiduImportResult,
+  type CloudDownloadRequest,
+  type CloudEntryContextMenuAction,
   type CloudEntry,
   type IPCApi,
   type RemoteCommand,
@@ -46,6 +48,10 @@ const api: IPCApi = {
   baiduLogout: (): Promise<BaiduAuthStatus> => ipcRenderer.invoke(IPC_CHANNELS.baiduLogout),
   baiduListDirectory: (path: string): Promise<CloudEntry[]> =>
     ipcRenderer.invoke(IPC_CHANNELS.baiduListDirectory, path),
+  cloudEntryContextMenu: (request: CloudDownloadRequest): Promise<CloudEntryContextMenuAction | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.cloudEntryContextMenu, request),
+  cloudDownload: (request: CloudDownloadRequest): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.cloudDownload, request),
   baiduCreateTrack: (entry: CloudEntry): Promise<Track> =>
     ipcRenderer.invoke(IPC_CHANNELS.baiduCreateTrack, entry),
   baiduImportDirectory: (rootPath: string, playlistName: string): Promise<BaiduImportResult> =>

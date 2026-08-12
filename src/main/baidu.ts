@@ -9,7 +9,7 @@ import {
   type WebContentsWillNavigateEventParams
 } from 'electron'
 import type { BaiduAuthStatus, CloudEntry } from '../shared/ipc'
-import { fetchWithElectronNet, isAsciiHeaderValue } from './media-net'
+import { downloadResponseToFile, fetchWithElectronNet, isAsciiHeaderValue } from './media-net'
 
 interface BaiduConfig {
   clientId: string
@@ -175,6 +175,15 @@ export class BaiduService {
   }
 
   async stream(path: string, request: Request): Promise<Response> {
+    const range = request.headers.get('Range')
+    return this.fetchDownload(path, range)
+  }
+
+  async download(path: string, destination: string): Promise<void> {
+    await downloadResponseToFile(await this.fetchDownload(path), destination)
+  }
+
+  private async fetchDownload(path: string, range?: string | null): Promise<Response> {
     const token = await this.getValidToken()
     const url = new URL(DOWNLOAD_ENDPOINT)
     url.search = new URLSearchParams({
@@ -184,7 +193,6 @@ export class BaiduService {
     }).toString()
 
     const headers: Record<string, string> = { 'User-Agent': 'pan.baidu.com' }
-    const range = request.headers.get('Range')
     if (range && isAsciiHeaderValue(range)) headers.Range = range
     return fetchWithElectronNet(url.toString(), headers)
   }
