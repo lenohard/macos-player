@@ -294,6 +294,7 @@ ipcMain.handle(IPC_CHANNELS.updateDownload, () => appUpdater.downloadUpdate())
 ipcMain.handle(IPC_CHANNELS.updateInstall, () => appUpdater.quitAndInstall())
 
 ipcMain.handle(IPC_CHANNELS.aiGetConfig, () => aiService.getConfig())
+ipcMain.handle(IPC_CHANNELS.aiRevealApiKey, () => aiService.revealApiKey())
 ipcMain.handle(IPC_CHANNELS.aiSaveConfig, (_event, config) => aiService.saveConfig(config))
 ipcMain.handle(IPC_CHANNELS.aiFetchModels, () => aiService.fetchModels())
 ipcMain.handle(IPC_CHANNELS.aiTestConnection, () => aiService.testConnection())

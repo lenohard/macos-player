@@ -113,6 +113,7 @@ Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by
 - **问题**：页面加载时把 `apiKeyMasked`（如 `sk-••••abcd`）写入受控 state → `dirty` 判定字段变更 → 600ms debounce 触发 `saveNow()` → 主进程把脱敏值当真密钥加密保存，覆盖 safeStorage 中的原始 key → UI 闪现旧样式。
 - **根因**：任何写入受控 input state 的非空值都会被 debounce 当作用户输入触发保存。
 - **正确做法**：用 `keyDirty` ref（或 state）标记「用户已编辑」；初始化时 input 保持空；仅在 `keyDirty.current === true` 且 `apiKey.trim() !== ''` 时才发送 apiKey 到主进程。脱敏值可作 placeholder 或只读展示，绝不能进入受控 state。
+- **显隐完整链路**：仅返回 `apiKeyMasked` 或切换 `<input type>` 不能查看已保存密钥。renderer 应默认展示脱敏 placeholder；用户点击眼睛时才经显式 IPC 让 main 从 `safeStorage` 解密并返回真实值。真实密钥不可在页面初始化时主动下发。
 - **判断是否需要保存**：`keyDirty.current ? apiKey.trim() : ''`。
 
 ## Conventions for agents

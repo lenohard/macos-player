@@ -47,6 +47,7 @@ export default function AiSettings() {
   const [protocol, setProtocol] = useState<AiProtocol>('chat')
   const [baseUrl, setBaseUrl] = useState(DEFAULT_URLS.chat)
   const [apiKey, setApiKey] = useState('')
+  const [apiKeyMasked, setApiKeyMasked] = useState('')
   const [model, setModel] = useState('')
   const [reasoningEffort, setReasoningEffort] = useState('')
 
@@ -64,9 +65,12 @@ export default function AiSettings() {
   const [testResult, setTestResult] = useState<AiTestResult | null>(null)
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
   const [showApiKey, setShowApiKey] = useState(false)
+  const [isRevealingKey, setIsRevealingKey] = useState(false)
 
   const baseUrlTouched = useRef(false)
   const keyDirty = useRef(false)
+  const keyRevealed = useRef(false)
+  const autoFetchAttempted = useRef(false)
   const statusTimer = useRef<number | undefined>(undefined)
 
   const dirty = useMemo(
@@ -90,6 +94,7 @@ export default function AiSettings() {
         setModel(config.model)
         setReasoningEffort(config.reasoningEffort)
         setHasApiKey(config.hasApiKey)
+        setApiKeyMasked(config.apiKeyMasked ?? '')
         setApiKey('')
         keyDirty.current = false
         setSavedConfig({ ...config, baseUrl: normalizedBaseUrl })
@@ -133,14 +138,17 @@ export default function AiSettings() {
         reasoningEffort,
         hasApiKey
       }
-      keyDirty.current = false
       const saved = await window.api.aiSaveConfig(config)
+      keyDirty.current = false
+      keyRevealed.current = false
       setProtocol(saved.protocol)
       setBaseUrl(saved.baseUrl)
       setModel(saved.model)
       setReasoningEffort(saved.reasoningEffort)
       setHasApiKey(saved.hasApiKey)
+      setApiKeyMasked(saved.apiKeyMasked ?? '')
       setApiKey('')
+      setShowApiKey(false)
       setSavedConfig(saved)
       setTestResult(null)
       flashStatus('已保存 ✓')
@@ -156,6 +164,31 @@ export default function AiSettings() {
     const timer = window.setTimeout(() => void saveNow(), 600)
     return () => window.clearTimeout(timer)
   }, [loaded, dirty, configError, saveNow])
+
+  const toggleApiKeyVisibility = useCallback(async (): Promise<void> => {
+    if (showApiKey) {
+      setShowApiKey(false)
+      if (keyRevealed.current) {
+        keyRevealed.current = false
+        setApiKey('')
+      }
+      return
+    }
+
+    if (hasApiKey && !keyDirty.current) {
+      setIsRevealingKey(true)
+      try {
+        setApiKey(await window.api.aiRevealApiKey())
+        keyRevealed.current = true
+      } catch (error) {
+        flashStatus(`读取 API Key 失败：${error instanceof Error ? error.message : String(error)}`)
+        return
+      } finally {
+        setIsRevealingKey(false)
+      }
+    }
+    setShowApiKey(true)
+  }, [apiKey, hasApiKey, showApiKey, flashStatus])
 
   const fetchModels = useCallback(async (): Promise<void> => {
     setModelError(null)
@@ -177,6 +210,12 @@ export default function AiSettings() {
       setIsLoadingModels(false)
     }
   }, [dirty, saveNow, savedConfig])
+
+  useEffect(() => {
+    if (!loaded || configError || autoFetchAttempted.current) return
+    autoFetchAttempted.current = true
+    void fetchModels()
+  }, [loaded, configError, fetchModels])
 
   const runTest = useCallback(async (): Promise<void> => {
     setTestResult(null)
@@ -266,15 +305,21 @@ export default function AiSettings() {
             <input
               type={showApiKey ? 'text' : 'password'}
               value={apiKey}
-              placeholder={hasApiKey ? '已保存密钥 · 留空保持不变' : '粘贴你的 API Key…'}
-              onChange={event => { keyDirty.current = true; setApiKey(event.target.value) }}
+              placeholder={hasApiKey ? (apiKeyMasked || '已保存密钥 · 留空保持不变') : '粘贴你的 API Key…'}
+              onChange={event => {
+                keyDirty.current = true
+                keyRevealed.current = false
+                setApiKeyMasked('')
+                setApiKey(event.target.value)
+              }}
               spellCheck={false}
               autoComplete="off"
             />
             <button
               type="button"
               className="ai-visibility-button"
-              onClick={() => setShowApiKey(value => !value)}
+              onClick={() => void toggleApiKeyVisibility()}
+              disabled={isRevealingKey}
               aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
               title={showApiKey ? '隐藏 API Key' : '显示 API Key'}
             >
@@ -307,27 +352,30 @@ export default function AiSettings() {
       </div>
 
       <div className="ai-card">
-        <p className="ai-card-title">模型</p>
-        <div className="ai-field">
-          <span className="ai-field-label">当前模型</span>
-          <input
-            type="text"
-            value={model}
-            placeholder="例如 gpt-4o-mini / claude-3-5-haiku-latest"
-            onChange={event => setModel(event.target.value)}
-            spellCheck={false}
-          />
-          <span className="ai-field-note">可在下方列表中点击选用，或手动输入。</span>
+        <div className="ai-card-heading">
+          <p className="ai-card-title">模型</p>
+          {model && <span className="ai-selected-model" title={model}>已选 {model}</span>}
         </div>
 
-        <div className="ai-field">
-          <span className="ai-field-label">思考强度</span>
-          <select value={reasoningEffort} onChange={event => setReasoningEffort(event.target.value)}>
-            {REASONING_OPTIONS.map(option => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-          <span className="ai-field-note">仅对支持推理的模型生效。</span>
+        <div className="ai-model-primary-row">
+          <label className="ai-field">
+            <span className="ai-field-label">当前模型</span>
+            <input
+              type="text"
+              value={model}
+              placeholder="选择下方模型，或手动输入模型 ID"
+              onChange={event => setModel(event.target.value)}
+              spellCheck={false}
+            />
+          </label>
+          <label className="ai-field ai-reasoning-field">
+            <span className="ai-field-label">思考强度</span>
+            <select value={reasoningEffort} onChange={event => setReasoningEffort(event.target.value)}>
+              {REASONING_OPTIONS.map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
         <div className="ai-browser-controls">
@@ -339,16 +387,16 @@ export default function AiSettings() {
             spellCheck={false}
           />
           <button className="quiet-button" onClick={() => void fetchModels()} disabled={isLoadingModels || !loaded}>
-            {isLoadingModels ? '加载中…' : models.length > 0 ? '刷新' : '获取模型列表'}
+            {isLoadingModels ? '加载中…' : '刷新'}
           </button>
           {models.length > 0 && <span className="ai-field-note ai-model-count">{displayModels.length} / {models.length} 个</span>}
         </div>
 
         {modelError && <div className="inline-error">{modelError}</div>}
 
-        {models.length === 0 && !isLoadingModels && !modelError && (
-          <p className="ai-field-note">
-            点击“获取模型列表”从 {baseUrl.trim() || DEFAULT_URLS[protocol]}/models 拉取，无需 API Key。
+        {models.length === 0 && (
+          <p className="ai-model-empty">
+            {isLoadingModels ? '正在获取公开模型列表…' : '暂无模型；可刷新公开模型目录，或直接输入模型 ID。'}
           </p>
         )}
 

@@ -1346,6 +1346,34 @@ input:focus-visible {
   font-weight: 650;
 }
 
+.ai-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ai-selected-model {
+  min-width: 0;
+  margin-left: auto;
+  padding: 3px 7px;
+  overflow: hidden;
+  color: var(--accent);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--accent-soft);
+  border-radius: 5px;
+}
+
+.ai-model-primary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  gap: 10px;
+  align-items: end;
+}
+
 .ai-browser-controls {
   display: flex;
   align-items: center;
@@ -1497,6 +1525,17 @@ input:focus-visible {
   color: color-mix(in srgb, var(--text) 70%, var(--accent));
 }
 
+.ai-model-empty {
+  margin: 0;
+  padding: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-solid);
+}
+
 .ai-model-list {
   display: flex;
   flex-direction: column;
@@ -1560,6 +1599,10 @@ input:focus-visible {
 }
 
 @media (max-width: 620px) {
+  .ai-model-primary-row {
+    grid-template-columns: 1fr;
+  }
+
   .ai-browser-controls {
     flex-wrap: wrap;
   }

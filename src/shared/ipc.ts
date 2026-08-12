@@ -37,6 +37,7 @@ export const IPC_CHANNELS = {
   updateInstall: 'update:install',
   trackContextMenu: 'track:contextMenu',
   aiGetConfig: 'ai:getConfig',
+  aiRevealApiKey: 'ai:revealApiKey',
   aiSaveConfig: 'ai:saveConfig',
   aiFetchModels: 'ai:fetchModels',
   aiTestConnection: 'ai:testConnection'
@@ -248,6 +249,7 @@ export interface IPCApi {
   onOpenSettings(listener: () => void): () => void
   onUpdateStatus(listener: (snapshot: UpdateSnapshot) => void): () => void
   aiGetConfig(): Promise<AiConfig>
+  aiRevealApiKey(): Promise<string>
   aiSaveConfig(config: AiConfig): Promise<AiConfig>
   aiFetchModels(): Promise<AiModelInfo[]>
   aiTestConnection(): Promise<AiTestResult>

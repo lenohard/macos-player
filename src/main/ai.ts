@@ -113,6 +113,10 @@ export class AiService {
     return saved.protocol === 'response' || saved.protocol === 'message' ? saved.protocol : 'chat'
   }
 
+  revealApiKey(): string {
+    return this.loadKey() ?? ''
+  }
+
   saveConfig(config: AiConfig): AiConfig {
     const { apiKey, ...rest } = config
     const protocol = this.protocolOf(rest)

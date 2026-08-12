@@ -92,6 +92,7 @@ const api: IPCApi = {
     return () => ipcRenderer.removeListener(UPDATE_STATUS_CHANNEL, handler)
   },
   aiGetConfig: (): Promise<AiConfig> => ipcRenderer.invoke(IPC_CHANNELS.aiGetConfig),
+  aiRevealApiKey: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.aiRevealApiKey),
   aiSaveConfig: (config: AiConfig): Promise<AiConfig> =>
     ipcRenderer.invoke(IPC_CHANNELS.aiSaveConfig, config),
   aiFetchModels: (): Promise<AiModelInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.aiFetchModels),
