@@ -20,6 +20,10 @@ interface Props {
   onWebdavDisconnect: () => void
   updateSnapshot: UpdateSnapshot
   updateBusy: boolean
+  cliBusy: boolean
+  cliInstalled: boolean
+  cliError: string | null
+  onCliInstall: () => void
   onUpdateCheck: () => void
   onUpdateDownload: () => void
   onUpdateInstall: () => void
@@ -155,6 +159,10 @@ export default function SettingsPanel(props: Props) {
           <AboutPanel
             snapshot={props.updateSnapshot}
             busy={props.updateBusy}
+            cliBusy={props.cliBusy}
+            cliInstalled={props.cliInstalled}
+            cliError={props.cliError}
+            onCliInstall={props.onCliInstall}
             onCheck={props.onUpdateCheck}
             onDownload={props.onUpdateDownload}
             onInstall={props.onUpdateInstall}

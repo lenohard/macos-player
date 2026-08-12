@@ -10,6 +10,7 @@ interface PlayerBarProps {
   repeatMode: 'off' | 'all' | 'one'
   playlists: PlaylistSummary[]
   remoteTogglePlay: number
+  onPlayingChange(playing: boolean): void
   onShuffleChange(shuffle: boolean): void
   onRepeatChange(): void
   onTemporaryEnded(): void
@@ -47,6 +48,7 @@ export default function PlayerBar({
   repeatMode,
   playlists,
   remoteTogglePlay,
+  onPlayingChange,
   onShuffleChange,
   onRepeatChange,
   onTemporaryEnded,
@@ -185,8 +187,8 @@ export default function PlayerBar({
         onLoadedMetadata={event => setDuration(event.currentTarget.duration)}
         onDurationChange={event => setDuration(event.currentTarget.duration)}
         onTimeUpdate={event => setCurrentTime(event.currentTarget.currentTime)}
-        onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
+        onPlay={() => { setIsPlaying(true); onPlayingChange(true) }}
+        onPause={() => { setIsPlaying(false); onPlayingChange(false) }}
         onEnded={handleEnded}
         onError={() => setPlaybackError('无法播放此文件')}
       />

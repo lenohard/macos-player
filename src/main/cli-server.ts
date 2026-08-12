@@ -4,6 +4,7 @@ import { join } from 'path'
 import { app, type BrowserWindow } from 'electron'
 import {
   PLAYBACK_REMOTE_COMMAND_CHANNEL,
+  type PlaybackState,
   type RemoteCommand,
   type Track
 } from '../shared/ipc'
@@ -22,6 +23,11 @@ interface CliServerContext {
 }
 
 let server: Server | null = null
+let playbackState: PlaybackState | null = null
+
+export function setPlaybackState(state: PlaybackState | null): void {
+  playbackState = state
+}
 
 function portFilePath(): string {
   return join(app.getPath('userData'), 'cli-port')
@@ -180,9 +186,21 @@ async function handleRequest(
       return jsonReply(res, 200, { ok: sent })
     }
 
+    // POST /shuffle
+    if (method === 'POST' && path === '/shuffle') {
+      const sent = sendRemoteCommand(ctx, { action: 'shuffle' })
+      return jsonReply(res, 200, { ok: sent })
+    }
+
+    // POST /repeat
+    if (method === 'POST' && path === '/repeat') {
+      const sent = sendRemoteCommand(ctx, { action: 'repeat' })
+      return jsonReply(res, 200, { ok: sent })
+    }
+
     // GET /status
     if (method === 'GET' && path === '/status') {
-      return jsonReply(res, 200, { ok: true, running: true })
+      return jsonReply(res, 200, { ok: true, running: true, playback: playbackState })
     }
 
     return jsonReply(res, 404, { error: 'Not found' })

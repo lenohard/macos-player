@@ -16,6 +16,7 @@ import {
   type LibraryRootInfo,
   type LibrarySource,
   type PlaybackQueueState,
+  type PlaybackState,
   type PlaylistSummary,
   type SyncProgress,
   type Track,
@@ -81,6 +82,9 @@ const api: IPCApi = {
   updateCheck: (): Promise<UpdateSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.updateCheck),
   updateDownload: (): Promise<UpdateSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.updateDownload),
   updateInstall: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.updateInstall),
+  cliInstall: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.cliInstall),
+  pushPlaybackState: (state: PlaybackState): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.playbackPushState, state),
   trackContextMenu: (request: TrackContextMenuRequest): Promise<TrackContextMenuAction | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.trackContextMenu, request),
   onOpenSettings: (listener: () => void) => {

@@ -421,13 +421,34 @@ input:focus-visible {
 }
 
 .about-panel {
-  max-width: 560px;
+  max-width: 720px;
+  padding: 22px 24px;
+}
+
+.about-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.about-heading .panel-title {
+  margin: 0;
 }
 
 .about-lead {
-  margin: 0 0 16px;
+  margin: 6px 0 0;
   color: var(--muted);
   line-height: 1.5;
+}
+
+.about-version {
+  flex: none;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .about-update {
@@ -474,41 +495,82 @@ input:focus-visible {
 }
 
 .about-cli {
-  margin-top: 24px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 16px;
+  margin-top: 22px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-solid) 64%, transparent);
 }
 
-.about-cli-title {
+.about-cli-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.about-cli-header h2 {
   margin: 0;
+  font-size: 16px;
   font-weight: 600;
-  color: var(--text);
 }
 
 .about-cli-desc {
-  margin: 0;
+  margin: 6px 0 0;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
 }
 
-.about-cli-cmd {
-  display: flex;
-  gap: 8px;
-  align-items: center;
+.about-cli-status {
+  flex: none;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--border);
+  font-size: 11px;
 }
 
-.about-cli-cmd code {
-  flex: 1;
-  padding: 8px 12px;
-  border-radius: 6px;
-  background: var(--surface-elevated);
+.about-cli-status.installed {
+  color: #218653;
+  background: rgba(49, 180, 107, 0.13);
+}
+
+.about-cli-path {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--content-bg);
+  color: var(--muted);
   font-size: 12px;
-  user-select: all;
-  word-break: break-all;
+}
+
+.about-cli-path code {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.about-cli-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.about-cli-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.about-cli-error {
+  margin: -4px 0 0;
+  color: #c43d3d;
+  font-size: 12px;
 }
 
 .sidebar-settings {

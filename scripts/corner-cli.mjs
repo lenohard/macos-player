@@ -3,15 +3,19 @@
  * corner CLI — remote control for the corner music player.
  *
  * Usage:
- *   corner playlists                          list playlists
- *   corner search <query>                     search tracks
- *   corner play --playlist-id <id>            play a playlist
+ *   corner help                                show this help
+ *   corner status                              show playback status
+ *   corner toggle                              toggle play/pause
+ *   corner next                                next track
+ *   corner prev                                previous track
+ *   corner shuffle                             toggle shuffle
+ *   corner repeat                              cycle repeat mode (off → all → one)
+ *   corner playlists                           list playlists
+ *   corner sources                             list sources
+ *   corner search <query>                      search tracks
+ *   corner play --playlist-id <id>             play a playlist
  *   corner play --track-id <id>               play a single track
  *   corner play --query <query>               search & play first match
- *   corner toggle                             toggle play/pause
- *   corner next                               next track
- *   corner prev                               previous track
- *   corner status                             check if running
  *
  * JSON output: add --json to any command.
  */
@@ -85,11 +89,19 @@ function print(data, useJson) {
   }
 }
 
+function formatTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '0:00'
+  const minutes = Math.floor(seconds / 60)
+  const remaining = Math.floor(seconds % 60)
+  return `${minutes}:${remaining.toString().padStart(2, '0')}`
+}
+
 function formatHuman(data) {
   if (!data) return ''
 
   // playlist list
   if (Array.isArray(data) && data[0]?.name !== undefined && data[0]?.trackCount !== undefined) {
+    if (data.length === 0) return 'No playlists.'
     return data.map((p, i) => `${i + 1}. ${p.name} (${p.trackCount} tracks, id: ${p.id})`).join('\n')
   }
 
@@ -114,21 +126,60 @@ function formatHuman(data) {
     return `▶ Playing playlist (${data.trackCount} tracks)`
   }
 
-  // status
-  if (data.ok !== undefined && data.running) return 'corner is running'
+  // status with playback info
+  if (data.ok !== undefined && data.running) {
+    const pb = data.playback
+    if (!pb) return 'corner is running (no playback info)'
+
+    const playIcon = pb.isPlaying ? '▶' : '⏸'
+    const lines = [`corner is running`]
+
+    if (pb.currentTrack) {
+      lines.push(`  ${playIcon} ${pb.currentTrack.title} — ${pb.currentTrack.artist || 'unknown'}`)
+      lines.push(`    source: ${pb.currentTrack.sourceId} | id: ${pb.currentTrack.id}`)
+    } else {
+      lines.push(`  ${playIcon} No track loaded`)
+    }
+
+    lines.push('')
+    lines.push(`  queue: ${pb.queueLength} tracks | index: ${pb.currentIndex}`)
+    lines.push(`  shuffle: ${pb.shuffle ? 'on' : 'off'} | repeat: ${pb.repeatMode}`)
+
+    return lines.join('\n')
+  }
+
+  // simple ok response
+  if (data.ok !== undefined && data.ok) return 'OK'
 
   // fallback
   if (data.ok !== undefined && data.error) return `Error: ${data.error}`
   return JSON.stringify(data, null, 2)
 }
 
+const HELP = `corner CLI — remote control for the corner music player
+
+Usage:
+  corner help                      show this help
+  corner status                    show playback status
+  corner toggle                    toggle play/pause
+  corner next                      next track
+  corner prev                      previous track
+  corner shuffle                   toggle shuffle
+  corner repeat                    cycle repeat mode (off → all → one)
+  corner playlists                  list playlists
+  corner sources                    list sources
+  corner search <query>            search tracks
+  corner play --playlist-id <id>   play a playlist
+  corner play --track-id <id>      play a single track
+  corner play --query <query>      search & play first match
+
+Add --json or -j to any command for JSON output.`
+
 async function main() {
   const args = process.argv.slice(2)
   if (args.length === 0) {
-    console.log('Usage: corner <command> [options]')
-    console.log('Commands: sources, playlists, search, play, toggle, next, prev, status')
-    console.log('Add --json for JSON output.')
-    process.exit(1)
+    console.log(HELP)
+    process.exit(0)
   }
 
   const cmd = args[0]
@@ -138,6 +189,12 @@ async function main() {
 
   try {
     switch (cmd) {
+      case 'help':
+      case '--help':
+      case '-h':
+        console.log(HELP)
+        break
+
       case 'playlists': {
         const data = await request('/playlists')
         print(data, useJson)
@@ -193,6 +250,16 @@ async function main() {
         print(data, useJson)
         break
       }
+      case 'shuffle': {
+        const data = await request('/shuffle', 'POST')
+        print(data, useJson)
+        break
+      }
+      case 'repeat': {
+        const data = await request('/repeat', 'POST')
+        print(data, useJson)
+        break
+      }
       case 'status': {
         const data = await request('/status')
         print(data, useJson)
@@ -200,7 +267,7 @@ async function main() {
       }
       default:
         console.error(`Unknown command: ${cmd}`)
-        console.error('Available: sources, playlists, search, play, toggle, next, prev, status')
+        console.error(HELP)
         process.exit(1)
     }
   } catch (error) {

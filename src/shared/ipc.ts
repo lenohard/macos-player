@@ -35,6 +35,8 @@ export const IPC_CHANNELS = {
   updateCheck: 'update:check',
   updateDownload: 'update:download',
   updateInstall: 'update:install',
+  cliInstall: 'cli:install',
+  playbackPushState: 'playback:pushState',
   trackContextMenu: 'track:contextMenu',
   aiGetConfig: 'ai:getConfig',
   aiRevealApiKey: 'ai:revealApiKey',
@@ -54,6 +56,17 @@ export type RemoteCommand =
   | { action: 'next' }
   | { action: 'prev' }
   | { action: 'togglePlay' }
+  | { action: 'shuffle' }
+  | { action: 'repeat' }
+
+export interface PlaybackState {
+  isPlaying: boolean
+  currentTrack: Track | null
+  queueLength: number
+  currentIndex: number
+  shuffle: boolean
+  repeatMode: RepeatMode
+}
 
 export interface Track {
   id: string
@@ -253,6 +266,8 @@ export interface IPCApi {
   updateCheck(): Promise<UpdateSnapshot>
   updateDownload(): Promise<UpdateSnapshot>
   updateInstall(): Promise<boolean>
+  cliInstall(): Promise<string>
+  pushPlaybackState(state: PlaybackState): Promise<void>
   trackContextMenu(request: TrackContextMenuRequest): Promise<TrackContextMenuAction | null>
   onOpenSettings(listener: () => void): () => void
   onUpdateStatus(listener: (snapshot: UpdateSnapshot) => void): () => void

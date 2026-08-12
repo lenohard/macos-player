@@ -24,34 +24,58 @@ function statusLabel(snapshot: UpdateSnapshot): string {
 interface AboutPanelProps {
   snapshot: UpdateSnapshot
   busy: boolean
+  cliBusy: boolean
+  cliInstalled: boolean
+  cliError: string | null
   onCheck(): void
   onDownload(): void
   onInstall(): void
+  onCliInstall(): void
 }
 
-export default function AboutPanel({ snapshot, busy, onCheck, onDownload, onInstall }: AboutPanelProps) {
-  const cliCommand = 'ln -sf /Applications/corner.app/Contents/Resources/corner-cli.mjs /usr/local/bin/corner'
-
+export default function AboutPanel({
+  snapshot,
+  busy,
+  cliBusy,
+  cliInstalled,
+  cliError,
+  onCheck,
+  onDownload,
+  onInstall,
+  onCliInstall
+}: AboutPanelProps) {
   return (
     <div className="library-panel about-panel">
-      <p className="panel-title">corner · v{snapshot.appVersion}</p>
-      <p className="about-lead">本地与网盘音乐播放器。更新从 GitHub Releases 拉取（需已安装正式版）。</p>
-
-      <div className="about-cli">
-        <p className="about-cli-title">命令行安装</p>
-        <p className="about-cli-desc">安装后可用 <code>corner</code> 命令控制播放。</p>
-        <div className="about-cli-cmd">
-          <code>{cliCommand}</code>
-          <button
-            className="quiet-button"
-            onClick={() => {
-              void navigator.clipboard.writeText(cliCommand)
-            }}
-          >
-            复制
-          </button>
+      <div className="about-heading">
+        <div>
+          <p className="panel-title">corner · v{snapshot.appVersion}</p>
+          <p className="about-lead">本地与网盘音乐播放器。</p>
         </div>
+        <span className="about-version">macOS</span>
       </div>
+
+      <section className="about-cli" aria-labelledby="about-cli-title">
+        <div className="about-cli-header">
+          <div>
+            <h2 id="about-cli-title">命令行控制</h2>
+            <p className="about-cli-desc">安装后可在终端直接使用 <code>corner</code> 搜索和控制播放。</p>
+          </div>
+          <span className={`about-cli-status ${cliInstalled ? 'installed' : ''}`}>
+            {cliInstalled ? '已安装' : '未安装'}
+          </span>
+        </div>
+        <div className="about-cli-path">
+          <span>安装位置</span>
+          <code>~/.local/bin/corner</code>
+        </div>
+        {cliError && <p className="about-cli-error" role="alert">{cliError}</p>}
+        <div className="about-cli-actions">
+          <button className="primary-button" onClick={onCliInstall} disabled={cliBusy}>
+            {cliBusy ? '安装中…' : cliInstalled ? '重新安装' : '安装命令行'}
+          </button>
+          <span className="about-cli-hint">无需 sudo，安装到当前用户目录</span>
+        </div>
+      </section>
 
       <div className="about-update">
         <p className="about-status" role="status">

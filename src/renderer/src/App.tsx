@@ -6,6 +6,7 @@ import type {
   LibrarySource,
   PlaybackQueueState,
   PlaylistSummary,
+  RemoteCommand,
   RepeatMode,
   SyncProgress,
   Track,
@@ -153,6 +154,10 @@ export default function App() {
   const [webdavImportName, setWebdavImportName] = useState('')
   const queueRowRef = useRef<HTMLButtonElement | null>(null)
   const [remoteTogglePlay, setRemoteTogglePlay] = useState(0)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [cliInstallBusy, setCliInstallBusy] = useState(false)
+  const [cliInstalled, setCliInstalled] = useState(false)
+  const [cliInstallError, setCliInstallError] = useState<string | null>(null)
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot>({
     appVersion: '…',
     enabled: false,
@@ -267,12 +272,28 @@ export default function App() {
     return window.api.onUpdateStatus(setUpdateSnapshot)
   }, [])
 
+  async function installCli(): Promise<void> {
+    setCliInstallBusy(true)
+    setCliInstallError(null)
+    try {
+      await window.api.cliInstall()
+      setCliInstalled(true)
+    } catch (installError) {
+      setCliInstallError(messageFrom(installError, '命令行安装失败'))
+    } finally {
+      setCliInstallBusy(false)
+    }
+  }
+
   useEffect(() => window.api.onOpenSettings(() => {
     setSettingsSection('connections')
     setMainView({ kind: 'settings' })
   }), [])
 
-  useEffect(() => window.api.onRemoteCommand((command) => {
+  // Remote commands must always call the *latest* state, not first-render closures.
+  // useEffect with [] captures stale functions; use ref to indirection.
+  const remoteCommandHandler = useRef<(command: RemoteCommand) => void>(() => {})
+  remoteCommandHandler.current = (command) => {
     switch (command.action) {
       case 'play':
         replaceQueueAndPlay(command.tracks)
@@ -289,8 +310,15 @@ export default function App() {
       case 'togglePlay':
         setRemoteTogglePlay(c => c + 1)
         break
+      case 'shuffle':
+        handleShuffleChange(!shuffle)
+        break
+      case 'repeat':
+        cycleRepeatMode()
+        break
     }
-  }), [])
+  }
+  useEffect(() => window.api.onRemoteCommand(command => remoteCommandHandler.current(command)), [])
 
 
   useEffect(() => {
@@ -789,6 +817,18 @@ export default function App() {
   const currentTrackId = currentTrack?.id ?? null
   const detailReturnView = mainView.kind === 'trackDetail' ? mainView.returnTo : null
 
+  // Push playback state to main for CLI /status
+  useEffect(() => {
+    void window.api.pushPlaybackState({
+      isPlaying,
+      currentTrack: currentTrack ?? null,
+      queueLength: tracks.length,
+      currentIndex,
+      shuffle,
+      repeatMode
+    })
+  }, [isPlaying, currentTrack, tracks.length, currentIndex, shuffle, repeatMode])
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -950,6 +990,10 @@ export default function App() {
               onWebdavDisconnect={() => void disconnectWebdav()}
               updateSnapshot={updateSnapshot}
               updateBusy={updateBusy}
+              cliBusy={cliInstallBusy}
+              cliInstalled={cliInstalled}
+              cliError={cliInstallError}
+              onCliInstall={() => void installCli()}
               onUpdateCheck={() => void window.api.updateCheck().then(setUpdateSnapshot)}
               onUpdateDownload={() => void window.api.updateDownload().then(setUpdateSnapshot)}
               onUpdateInstall={() => void window.api.updateInstall()}
@@ -1498,6 +1542,7 @@ export default function App() {
         onNext={playNext}
         onPrevious={playPrevious}
         remoteTogglePlay={remoteTogglePlay}
+        onPlayingChange={setIsPlaying}
         onAddToPlaylist={playlistId => void addCurrentTrackToPlaylist(playlistId)}
         onOpenDetail={() => {
           if (currentTrack) openTrackDetail(currentTrack)

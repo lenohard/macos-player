@@ -8,7 +8,9 @@ import {
   protocol,
   type OpenDialogOptions
 } from 'electron'
-import { basename, extname, join } from 'path'
+import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync, unlinkSync } from 'fs'
+import { homedir } from 'os'
+import { basename, dirname, extname, join } from 'path'
 import { pathToFileURL } from 'url'
 import {
   IPC_CHANNELS,
@@ -18,6 +20,7 @@ import {
   type CloudEntry,
   type LibrarySource,
   type PlaybackQueueState,
+  type PlaybackState,
   type SyncProgress,
   type Track,
   type TrackContextMenuAction,
@@ -33,7 +36,7 @@ import { LibraryService } from './library'
 import { fetchWithElectronNet, isAsciiHeaderValue } from './media-net'
 import { WebDAVService } from './webdav'
 import { syncWebDAVDirectory, resyncWebDAVDirectory } from './webdav-sync'
-import { startCliServer, stopCliServer } from './cli-server'
+import { startCliServer, stopCliServer, setPlaybackState } from './cli-server'
 
 const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.wav'])
 
@@ -66,6 +69,32 @@ const appUpdater = new AppUpdater(emitUpdateStatus)
 function getLibrary(): LibraryService {
   if (!library) library = new LibraryService(openLibraryDatabase())
   return library
+}
+
+function installCli(): string {
+  const source = app.isPackaged
+    ? join(process.resourcesPath, 'corner-cli.mjs')
+    : join(app.getAppPath(), 'scripts', 'corner-cli.mjs')
+  if (!existsSync(source)) throw new Error('找不到命令行文件，请重新安装 corner。')
+
+  const destination = join(homedir(), '.local', 'bin', 'corner')
+  mkdirSync(dirname(destination), { recursive: true })
+
+  try {
+    const existing = lstatSync(destination)
+    if (!existing.isSymbolicLink()) {
+      throw new Error(`安装目标已存在且不是 corner 创建的链接：${destination}`)
+    }
+    if (readlinkSync(destination) !== source) unlinkSync(destination)
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('ENOENT')) {
+      if (error instanceof Error && error.message.startsWith('安装目标已存在')) throw error
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  }
+
+  if (!existsSync(destination)) symlinkSync(source, destination)
+  return destination
 }
 
 function emitSyncProgress(progress: SyncProgress): void {
@@ -293,6 +322,8 @@ ipcMain.handle(IPC_CHANNELS.updateGetStatus, () => appUpdater.getSnapshot())
 ipcMain.handle(IPC_CHANNELS.updateCheck, () => appUpdater.checkForUpdates())
 ipcMain.handle(IPC_CHANNELS.updateDownload, () => appUpdater.downloadUpdate())
 ipcMain.handle(IPC_CHANNELS.updateInstall, () => appUpdater.quitAndInstall())
+ipcMain.handle(IPC_CHANNELS.cliInstall, () => installCli())
+ipcMain.handle(IPC_CHANNELS.playbackPushState, (_event, state: PlaybackState): void => setPlaybackState(state))
 
 ipcMain.handle(IPC_CHANNELS.aiGetConfig, () => aiService.getConfig())
 ipcMain.handle(IPC_CHANNELS.aiRevealApiKey, () => aiService.revealApiKey())
