@@ -149,6 +149,7 @@ Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by
 - **本地**：`npm run dist`（不上传）；**发布**：`npm run release` 或 push `v*.*.*` tag 触发 `.github/workflows/release-mac.yml`（`GH_TOKEN` = `GITHUB_TOKEN`）。
 - **签名/公证（已配好）**：Developer ID 签名 + notarize 已打通。本地 keychain 有 `Developer ID Application: denghui wang (285P3M6846)`（p12 在 `~/.agents/skills/apple-cli-build/extra/corner-devid.p12`，密码 `corner2026`）；`electron-builder.yml` `mac.notarize: true`；CI 用 secrets：`CSC_LINK`（p12 base64）+ `CSC_KEY_PASSWORD` + `APPLE_API_KEY`/`APPLE_API_KEY_ID`/`APPLE_API_ISSUER`（见 apple-cli-build skill）。本地打包不设 API key env 时会跳过公证（正常）。
 - **electron-builder 默认把 GitHub Release 打成 draft**：`npm run release`（`--publish always`）成功后 Release 仍是 draft，而 electron-updater 不会提供 draft 更新 → 每次发版后需 `env -u GH_TOKEN gh release edit <tag> --draft=false`（GH_TOKEN 环境变量会遮蔽 gh，见全局 memory）。
+- **⚠️ 已有 release 会拦截重发（同版本回移 tag 时）**：若该 tag 的 release 已存在且为**非 draft**，electron-builder 会报 `existing type not compatible with publishing type (existingType=release publishingType=draft)` 并**跳过全部资产上传**，workflow 显示 success 但资产仍是旧的。修复流程：`env -u GH_TOKEN gh release delete <tag> --yes`（保留 tag）→ `git push origin :refs/tags/<tag>` 再 `git push origin <tag>`（重推制造 push 事件触发 CI）→ 等新 run 完成后 `gh release edit <tag> --draft=false`。判断产物是否更新：看资产 `updatedAt` 是否为新构建时间，别只看 workflow conclusion。
 
 ### Agent / workflow pitfalls
 
