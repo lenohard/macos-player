@@ -3,14 +3,19 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import type { AiConfig, AiModelInfo, AiProtocol, AiTestResult } from '../shared/ipc'
 
-const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
-const ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1'
+const DEFAULT_BASE_URL = 'https://opencode.ai/zen/go/v1'
 const ANTHROPIC_VERSION = '2023-06-01'
 const REQUEST_TIMEOUT_MS = 15_000
 
-/** 按协议返回默认 base URL。 */
-export function defaultBaseUrlFor(protocol: AiProtocol): string {
-  return protocol === 'message' ? ANTHROPIC_BASE_URL : DEFAULT_BASE_URL
+const ENDPOINT_PATHS: Record<AiProtocol, string> = {
+  chat: '/chat/completions',
+  response: '/responses',
+  message: '/messages'
+}
+
+/** 返回默认 base URL。OpenCode Go 同时支持三种协议。 */
+export function defaultBaseUrlFor(_protocol: AiProtocol): string {
+  return DEFAULT_BASE_URL
 }
 
 function normalizeBaseUrl(url: string): string {
@@ -36,15 +41,43 @@ function parseModelItem(item: Record<string, unknown> & { id: string }): AiModel
   }
 }
 
+function maskApiKey(key: string): string {
+  if (key.length <= 8) return key.slice(0, 2) + '••••'
+  return key.slice(0, 4) + '••••' + key.slice(-4)
+}
+
+function containsTextReply(value: unknown): boolean {
+  if (typeof value === 'string') return value.trim().length > 0
+  if (Array.isArray(value)) return value.some(containsTextReply)
+  if (!value || typeof value !== 'object') return false
+
+  const record = value as Record<string, unknown>
+  if (typeof record.text === 'string' && record.text.trim()) return true
+  return containsTextReply(record.output_text) ||
+    containsTextReply(record.content) ||
+    containsTextReply(record.message) ||
+    containsTextReply(record.output) ||
+    containsTextReply(record.choices)
+}
+
 /**
  * 大模型接入配置与模型列表。
  * - 非敏感配置存 userData/ai-config.json
  * - API key 用 safeStorage 加密存 userData/credentials/ai-key.bin（与百度 token 一致）
- * - 模型列表端点：{baseUrl}/models，OpenAI 兼容用 Bearer，Anthropic 用 x-api-key
+ * - 模型列表端点：{baseUrl}/models（不需要 API Key）
+ * - 模型测试按协议调用对应的文本生成端点，并使用安全存储中的 API Key
  */
 export class AiService {
   private readonly configPath = join(app.getPath('userData'), 'ai-config.json')
   private readonly keyPath = join(app.getPath('userData'), 'credentials', 'ai-key.bin')
+
+  /** 老默认值，读取时自动迁移到新默认 */
+  private static readonly LEGACY_URLS = new Set([
+    'https://api.openai.com/v1',
+    'https://api.openai.com',
+    'https://api.anthropic.com/v1',
+    'https://api.anthropic.com'
+  ])
 
   getConfig(): AiConfig {
     let saved: Partial<AiConfig> = {}
@@ -55,11 +88,22 @@ export class AiService {
         // 配置损坏时回退默认值
       }
     }
+    const rawKey = this.loadKey()
+    const apiKeyMasked = rawKey ? maskApiKey(rawKey) : undefined
+    const hasApiKey = rawKey !== null
+
+    // 迁移老默认 URL → 新默认 (OpenCode Go)
+    const savedBaseUrl = saved.baseUrl?.trim()
+    const baseUrl = (!savedBaseUrl || AiService.LEGACY_URLS.has(savedBaseUrl))
+      ? defaultBaseUrlFor(this.protocolOf(saved))
+      : normalizeBaseUrl(savedBaseUrl)
+
     return {
       protocol: saved.protocol === 'response' || saved.protocol === 'message' ? saved.protocol : 'chat',
-      baseUrl: saved.baseUrl?.trim() ? normalizeBaseUrl(saved.baseUrl) : defaultBaseUrlFor(this.protocolOf(saved)),
+      baseUrl,
       apiKey: '',
-      hasApiKey: this.loadKey() !== null,
+      apiKeyMasked,
+      hasApiKey,
       model: saved.model ?? '',
       reasoningEffort: saved.reasoningEffort ?? ''
     }
@@ -104,21 +148,12 @@ export class AiService {
 
   async fetchModels(): Promise<AiModelInfo[]> {
     const config = this.getConfig()
-    const key = this.loadKey()
-    if (!key) throw new Error('API Key 未设置，请先在 AI 设置中填写。')
 
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (config.protocol === 'message') {
-      headers['x-api-key'] = key
-      headers['anthropic-version'] = ANTHROPIC_VERSION
-    } else {
-      headers.Authorization = `Bearer ${key}`
-    }
-
+    // 模型目录是公开 GET 端点，不依赖 API Key；实际调用仍在测试连接时鉴权。
     let response: Response
     try {
       response = await net.fetch(`${config.baseUrl}/models`, {
-        headers,
+        headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       })
     } catch (error) {
@@ -139,11 +174,54 @@ export class AiService {
   }
 
   async testConnection(): Promise<AiTestResult> {
-    try {
-      const models = await this.fetchModels()
-      return { ok: true, message: `✓ 连接成功 — ${models.length} 个模型可用` }
-    } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    const config = this.getConfig()
+    const key = this.loadKey()
+    if (!key) return { ok: false, message: 'API Key 未设置，请先填写并等待自动保存。' }
+    if (!config.model.trim()) return { ok: false, message: '请先填写当前模型，再测试模型回复。' }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
     }
+    if (config.protocol === 'message') {
+      headers['x-api-key'] = key
+      headers['anthropic-version'] = ANTHROPIC_VERSION
+    } else {
+      headers.Authorization = `Bearer ${key}`
+    }
+
+    const prompt = '请只回复：OK'
+    const body = config.protocol === 'chat'
+      ? { model: config.model.trim(), messages: [{ role: 'user', content: prompt }], max_tokens: 32 }
+      : config.protocol === 'response'
+        ? { model: config.model.trim(), input: prompt, max_output_tokens: 32, store: false }
+        : { model: config.model.trim(), max_tokens: 32, messages: [{ role: 'user', content: prompt }] }
+
+    let response: Response
+    try {
+      response = await net.fetch(`${config.baseUrl}${ENDPOINT_PATHS[config.protocol]}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+      })
+    } catch (error) {
+      return { ok: false, message: `网络请求失败：${error instanceof Error ? error.message : String(error)}` }
+    }
+
+    const responseBody = await response.text()
+    if (!response.ok) {
+      return { ok: false, message: `HTTP ${response.status}${responseBody ? `：${responseBody.slice(0, 300)}` : ''}` }
+    }
+
+    try {
+      const responseJson: unknown = JSON.parse(responseBody)
+      if (!containsTextReply(responseJson)) {
+        return { ok: false, message: '请求成功，但没有收到文本回复。' }
+      }
+    } catch {
+      return { ok: false, message: '请求成功，但响应不是有效的 JSON。' }
+    }
+
+    return { ok: true, message: '✓ 模型回复正常' }
   }
 }

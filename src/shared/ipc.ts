@@ -188,6 +188,8 @@ export interface AiConfig {
   baseUrl: string
   /** API key 由主进程 safeStorage 加密保存，返回时始终为空串 */
   apiKey: string
+  /** 已保存密钥的脱敏预览，如 sk-••••abcd；未保存时 undefined */
+  apiKeyMasked?: string
   /** 是否已保存过 API key（用于 UI 显示“已保存 / 未设置”） */
   hasApiKey: boolean
   model: string

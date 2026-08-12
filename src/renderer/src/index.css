@@ -1315,24 +1315,24 @@ input:focus-visible {
 .ai-settings {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   width: 100%;
   max-width: 720px;
 }
 
 .ai-save-ok {
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-size: 13px;
-  color: #2e7d32;
-  background: rgba(76, 175, 80, 0.1);
+  padding: 6px 10px;
+  color: var(--accent);
+  font-size: 12px;
+  background: var(--accent-soft);
+  border-radius: 7px;
 }
 
 .ai-card {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px;
+  gap: 12px;
+  padding: 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
@@ -1387,13 +1387,7 @@ input:focus-visible {
 }
 
 .ai-warn {
-  color: #a15c00;
-}
-
-@media (prefers-color-scheme: dark) {
-  .ai-warn {
-    color: #e2a03f;
-  }
+  color: color-mix(in srgb, var(--text) 65%, var(--accent));
 }
 
 .ai-input-row {
@@ -1404,6 +1398,50 @@ input:focus-visible {
 
 .ai-input-row input {
   flex: 1;
+}
+
+.ai-key-wrapper {
+  position: relative;
+}
+
+.ai-key-wrapper input {
+  width: 100%;
+  padding-right: 36px;
+}
+
+.ai-key-wrapper .ai-visibility-button {
+  position: absolute;
+  right: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.ai-visibility-button {
+  display: grid;
+  flex: 0 0 30px;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: var(--muted);
+  cursor: pointer;
+  background: transparent;
+  border-radius: 6px;
+}
+
+.ai-visibility-button:hover {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+.ai-visibility-button svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .ai-settings input[type='text'],
@@ -1452,17 +1490,11 @@ input:focus-visible {
 }
 
 .ai-test-result.ok {
-  color: #4caf50;
+  color: var(--accent);
 }
 
 .ai-test-result.fail {
-  color: #b3261e;
-}
-
-@media (prefers-color-scheme: dark) {
-  .ai-test-result.fail {
-    color: #ef5350;
-  }
+  color: color-mix(in srgb, var(--text) 70%, var(--accent));
 }
 
 .ai-model-list {
@@ -1504,7 +1536,7 @@ input:focus-visible {
 
 .ai-model-check {
   width: 16px;
-  color: var(--accent, #4f8cff);
+  color: var(--accent);
   font-size: 12px;
 }
 
