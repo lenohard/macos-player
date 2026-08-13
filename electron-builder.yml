@@ -30,6 +30,22 @@ mac:
     - target: dmg
     - target: zip
   artifactName: corner-${version}-mac-${arch}.${ext}
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+  artifactName: corner-${version}-win-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+linux:
+  icon: build/icon.png
+  category: AudioVideo
+  maintainer: lenohard <lenohard@users.noreply.github.com>
+  target:
+    - target: AppImage
+    - target: deb
+  artifactName: corner-${version}-linux-${arch}.${ext}
 dmg:
   sign: false
   writeUpdateInfo: false

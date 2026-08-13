@@ -15,8 +15,8 @@
     "icon": "bash scripts/generate-icon.sh",
     "typecheck": "tsc -b tsconfig.main.json && tsc -b tsconfig.preload.json && tsc -b tsconfig.renderer.json",
     "preview": "electron-vite preview",
-    "dist": "npm run build && electron-builder --mac --publish never",
-    "release": "npm run build && electron-builder --mac --publish always"
+    "dist": "npm run build && electron-builder --publish never",
+    "release": "npm run build && electron-builder --publish always"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

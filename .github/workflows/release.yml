@@ -1,4 +1,4 @@
-name: Release macOS
+name: Release
 
 on:
   push:
@@ -10,7 +10,11 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -22,8 +26,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # notarytool --key expects a p8 file path; decode the base64 secret into a file
+      # macOS only: notarytool --key expects a p8 file path; decode the base64 secret into a file
       - name: Prepare Apple API key
+        if: runner.os == 'macOS'
         run: |
           mkdir -p /tmp/asc
           echo "${{ secrets.APPLE_API_KEY }}" | base64 -D > /tmp/asc/AuthKey_3474G52856.p8
@@ -36,10 +41,10 @@ jobs:
           BAIDU_CLIENT_SECRET: ${{ secrets.BAIDU_CLIENT_SECRET }}
           BAIDU_REDIRECT_URI: ${{ secrets.BAIDU_REDIRECT_URI }}
           BAIDU_SCOPE: ${{ secrets.BAIDU_SCOPE }}
-          # Developer ID signing (p12 exported from keychain)
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          # Notarization via App Store Connect API key (path set by Prepare step)
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          # Developer ID signing (p12 exported from keychain) — macOS only
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.CSC_KEY_PASSWORD || '' }}
+          # Notarization via App Store Connect API key (path set by Prepare step) — macOS only
+          APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
         run: npm run release

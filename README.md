@@ -4,9 +4,13 @@ macOS 本地音乐播放器，支持本地文件与百度网盘云音乐库。
 
 ## 下载安装
 
-从 [Releases](https://github.com/lenohard/macos-player/releases) 页面下载最新的 `corner-<version>-mac-<arch>.dmg` 安装。
+从 [Releases](https://github.com/lenohard/macos-player/releases) 页面下载对应平台的安装包：
 
-> 当前版本为**未签名构建**（无 Apple Developer ID），首次打开会被 Gatekeeper 拦截。请用以下任一方式打开：
+- **macOS**: `corner-<version>-mac-<arch>.dmg`
+- **Windows**: `corner-<version>-win-x64.exe`（NSIS 安装器）
+- **Linux**: `corner-<version>-linux-x64.AppImage` 或 `.deb`
+
+> 当前版本为**未签名构建**（macOS 无 Apple Developer ID），macOS 首次打开会被 Gatekeeper 拦截。请用以下任一方式打开：
 >
 > - **右键** → 打开（比双击多一步确认，之后可正常使用）；或
 > - 终端执行 `xattr -cr /Applications/corner.app` 清除隔离标记后双击打开
