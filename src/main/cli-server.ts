@@ -180,6 +180,18 @@ async function handleRequest(
       return jsonReply(res, 200, { ok: true, running: true, playback: playbackState })
     }
 
+    // GET /queue — current playback queue (persisted by the player)
+    if (method === 'GET' && path === '/queue') {
+      const queue = ctx.library.loadPlaybackQueue()
+      return jsonReply(res, 200, queue ?? {
+        tracks: [],
+        currentIndex: -1,
+        shuffle: false,
+        repeatMode: 'off',
+        playOrder: []
+      })
+    }
+
     // GET /events — Server-Sent Events (playback push)
     if (method === 'GET' && path === '/events') {
       res.writeHead(200, {
