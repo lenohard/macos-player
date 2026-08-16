@@ -156,6 +156,11 @@ export default function App() {
   const queueRowRef = useRef<HTMLButtonElement | null>(null)
   const [remoteTogglePlay, setRemoteTogglePlay] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [volume, setVolume] = useState(0.8)
+  const [positionSec, setPositionSec] = useState(0)
+  const [durationSec, setDurationSec] = useState(0)
+  const [remoteVolume, setRemoteVolume] = useState({ seq: 0, value: 0.8 })
+  const [remoteSeek, setRemoteSeek] = useState({ seq: 0, value: 0 })
   const [cliInstallBusy, setCliInstallBusy] = useState(false)
   const [cliInstalled, setCliInstalled] = useState(false)
   const [cliInstallError, setCliInstallError] = useState<string | null>(null)
@@ -317,7 +322,14 @@ export default function App() {
       case 'repeat':
         cycleRepeatMode()
         break
+      case 'setVolume':
+        setRemoteVolume(previous => ({ seq: previous.seq + 1, value: command.volume }))
+        break
+      case 'seek':
+        setRemoteSeek(previous => ({ seq: previous.seq + 1, value: command.positionSec }))
+        break
     }
+    if (command.id) void window.api.ackRemoteCommand(command.id)
   }
   useEffect(() => window.api.onRemoteCommand(command => remoteCommandHandler.current(command)), [])
 
@@ -850,9 +862,12 @@ export default function App() {
       queueLength: tracks.length,
       currentIndex,
       shuffle,
-      repeatMode
+      repeatMode,
+      volume,
+      positionSec,
+      durationSec
     })
-  }, [isPlaying, currentTrack, tracks.length, currentIndex, shuffle, repeatMode])
+  }, [isPlaying, currentTrack, tracks.length, currentIndex, shuffle, repeatMode, volume, positionSec, durationSec])
 
   return (
     <div className="app-shell">
@@ -1575,7 +1590,14 @@ export default function App() {
         onNext={playNext}
         onPrevious={playPrevious}
         remoteTogglePlay={remoteTogglePlay}
+        remoteVolume={remoteVolume}
+        remoteSeek={remoteSeek}
         onPlayingChange={setIsPlaying}
+        onVolumeChange={setVolume}
+        onPositionChange={(position, duration) => {
+          setPositionSec(position)
+          setDurationSec(duration)
+        }}
         onAddToPlaylist={playlistId => void addCurrentTrackToPlaylist(playlistId)}
         onOpenDetail={() => {
           if (currentTrack) openTrackDetail(currentTrack)

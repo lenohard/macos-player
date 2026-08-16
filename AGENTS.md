@@ -82,6 +82,33 @@ All channels live in `IPC_CHANNELS` and `IPCApi` in `src/shared/ipc.ts`. Sync pr
 
 When adding features: extend **shared types first**, then main handler, preload, renderer.
 
+## CLI REST API
+
+Implemented in `src/main/cli-server.ts`; client is `scripts/corner-cli.mjs` (installed as `corner`). Server binds `127.0.0.1` on a random port written to `userData/cli-port`; an auth token is written to `userData/cli-token` (mode 0600) and must be sent as `Authorization: Bearer <token>` on every request except `GET /health`.
+
+Endpoints (all JSON):
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/health` | liveness (no auth) |
+| GET | `/status` | playback state (`playback` = `PlaybackState`) |
+| GET | `/events` | SSE stream of `{type:'playback',state}` |
+| GET | `/sources` | source list |
+| GET/POST | `/playlists` | list / create (`{name}`) |
+| GET/PATCH/DELETE | `/playlists/:id` | get / rename / delete |
+| GET/POST | `/playlists/:id/tracks` | list / add (`{trackId}` or `{trackIds}`) |
+| DELETE | `/playlists/:id/tracks/:trackId` | remove track |
+| GET | `/search?q=&limit=` | search tracks |
+| POST | `/play` | `{playlistId\|trackId\|query}` |
+| POST | `/toggle-play` `/next` `/prev` `/shuffle` `/repeat` | transport |
+| POST | `/volume` | `{volume:0..1}` |
+| POST | `/seek` | `{positionSec}` absolute or `{offsetSec}` relative |
+| GET | `/favorites` | list favorites |
+| GET/PUT/DELETE | `/favorites/:trackId` | check / add / remove favorite |
+| GET | `/history?limit=` | recently played |
+
+Transport commands (`/play`, `/toggle-play`, `/volume`, `/seek`, …) are sent to the renderer via `playback:remoteCommand` and **awaited for ack** (`playback:ackCommand`) with a 3s timeout; `ok` reflects whether the renderer confirmed the command (not whether playback itself completed). `PlaybackState` is pushed renderer→main on `playback:pushState` and includes `volume`, `positionSec`, `durationSec`.
+
 ## Renderer notes
 
 - Alias: `@shared` → `src/shared` (see `electron.vite.config.js`).

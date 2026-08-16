@@ -60,6 +60,11 @@ export function rowToTrackDetail(row: TrackRow): TrackDetail {
   }
 }
 
+export interface PlayHistoryEntry {
+  track: Track
+  playedAt: number
+}
+
 export class LibraryService {
   constructor(private readonly db: LibraryDatabase) {}
 
@@ -443,6 +448,59 @@ export class LibraryService {
       DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?
     `).run(playlistId, trackId)
     this.db.prepare('UPDATE playlists SET updated_at = ? WHERE id = ?').run(now, playlistId)
+  }
+
+  listFavoriteTracks(): Track[] {
+    const rows = this.db.prepare(`
+      SELECT t.id, t.source_id, t.remote_id, t.path, t.title, t.artist, t.duration_sec,
+             t.size, t.modified_at, t.md5, t.is_deleted
+      FROM favorites f
+      JOIN tracks t ON t.id = f.track_id
+      WHERE t.is_deleted = 0
+      ORDER BY f.added_at DESC
+    `).all() as unknown as TrackRow[]
+    return rows.map(rowToTrack)
+  }
+
+  addFavorite(trackId: string): void {
+    if (!this.getTrackRow(trackId)) throw new Error('曲目不存在或已被删除。')
+    this.db.prepare(`
+      INSERT INTO favorites (track_id, added_at) VALUES (?, ?)
+      ON CONFLICT(track_id) DO NOTHING
+    `).run(trackId, Date.now())
+  }
+
+  removeFavorite(trackId: string): void {
+    this.db.prepare('DELETE FROM favorites WHERE track_id = ?').run(trackId)
+  }
+
+  isFavorite(trackId: string): boolean {
+    const row = this.db.prepare(
+      'SELECT 1 FROM favorites WHERE track_id = ? LIMIT 1'
+    ).get(trackId)
+    return row !== undefined
+  }
+
+  recordPlay(trackId: string): void {
+    if (!this.getTrackRow(trackId)) return
+    this.db.prepare('INSERT INTO play_history (track_id, played_at) VALUES (?, ?)').run(
+      trackId,
+      Date.now()
+    )
+  }
+
+  listPlayHistory(limit: number): PlayHistoryEntry[] {
+    const capped = Math.max(1, Math.min(Math.trunc(limit) || 20, 500))
+    const rows = this.db.prepare(`
+      SELECT t.id, t.source_id, t.remote_id, t.path, t.title, t.artist, t.duration_sec,
+             t.size, t.modified_at, t.md5, t.is_deleted, h.played_at
+      FROM play_history h
+      JOIN tracks t ON t.id = h.track_id
+      WHERE t.is_deleted = 0
+      ORDER BY h.played_at DESC
+      LIMIT ?
+    `).all(capped) as unknown as Array<TrackRow & { played_at: number }>
+    return rows.map(row => ({ track: rowToTrack(row), playedAt: row.played_at }))
   }
 }
 

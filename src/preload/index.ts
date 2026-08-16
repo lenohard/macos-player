@@ -91,6 +91,8 @@ const api: IPCApi = {
   cliInstall: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.cliInstall),
   pushPlaybackState: (state: PlaybackState): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.playbackPushState, state),
+  ackRemoteCommand: (commandId: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.playbackAckCommand, commandId),
   trackContextMenu: (request: TrackContextMenuRequest): Promise<TrackContextMenuAction | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.trackContextMenu, request),
   onOpenSettings: (listener: () => void) => {

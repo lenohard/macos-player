@@ -39,6 +39,7 @@ export const IPC_CHANNELS = {
   updateInstall: 'update:install',
   cliInstall: 'cli:install',
   playbackPushState: 'playback:pushState',
+  playbackAckCommand: 'playback:ackCommand',
   trackContextMenu: 'track:contextMenu',
   aiGetConfig: 'ai:getConfig',
   aiRevealApiKey: 'ai:revealApiKey',
@@ -52,7 +53,7 @@ export const OPEN_SETTINGS_CHANNEL = 'app:openSettings'
 export const SYNC_PROGRESS_CHANNEL = 'library:syncProgress'
 export const UPDATE_STATUS_CHANNEL = 'update:status'
 
-export type RemoteCommand =
+export type RemoteCommand = (
   | { action: 'play'; tracks: Track[] }
   | { action: 'playSingle'; track: Track }
   | { action: 'next' }
@@ -60,6 +61,9 @@ export type RemoteCommand =
   | { action: 'togglePlay' }
   | { action: 'shuffle' }
   | { action: 'repeat' }
+  | { action: 'setVolume'; volume: number }
+  | { action: 'seek'; positionSec: number }
+) & { id?: string }
 
 export interface PlaybackState {
   isPlaying: boolean
@@ -68,6 +72,9 @@ export interface PlaybackState {
   currentIndex: number
   shuffle: boolean
   repeatMode: RepeatMode
+  volume: number
+  positionSec: number
+  durationSec: number
 }
 
 export interface Track {
@@ -281,6 +288,7 @@ export interface IPCApi {
   updateInstall(): Promise<boolean>
   cliInstall(): Promise<string>
   pushPlaybackState(state: PlaybackState): Promise<void>
+  ackRemoteCommand(commandId: string): Promise<void>
   trackContextMenu(request: TrackContextMenuRequest): Promise<TrackContextMenuAction | null>
   onOpenSettings(listener: () => void): () => void
   onUpdateStatus(listener: (snapshot: UpdateSnapshot) => void): () => void

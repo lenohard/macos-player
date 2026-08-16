@@ -10,12 +10,25 @@
  *   corner prev                                previous track
  *   corner shuffle                             toggle shuffle
  *   corner repeat                              cycle repeat mode (off → all → one)
+ *   corner volume <0..1>                       set volume
+ *   corner seek <seconds> | +<seconds> | -<seconds>   seek (absolute or relative)
  *   corner playlists                           list playlists
+ *   corner playlist create <name>              create a playlist
+ *   corner playlist rename <id> <name>         rename a playlist
+ *   corner playlist delete <id>                delete a playlist
+ *   corner playlist tracks <id>                list playlist tracks
+ *   corner playlist add <id> <trackId>         add a track to a playlist
+ *   corner playlist remove <id> <trackId>      remove a track from a playlist
  *   corner sources                             list sources
  *   corner search <query>                      search tracks
  *   corner play --playlist-id <id>             play a playlist
  *   corner play --track-id <id>               play a single track
  *   corner play --query <query>               search & play first match
+ *   corner favorites                           list favorite tracks
+ *   corner favorite <trackId>                  add to favorites
+ *   corner unfavorite <trackId>                remove from favorites
+ *   corner history [limit]                     show recently played tracks
+ *   corner events                              stream playback events (SSE)
  *
  * JSON output: add --json to any command.
  */
@@ -26,6 +39,7 @@ import { join } from 'path'
 import { execSync } from 'child_process'
 
 const PORT_FILE = join(homedir(), 'Library', 'Application Support', 'corner', 'cli-port')
+const TOKEN_FILE = join(homedir(), 'Library', 'Application Support', 'corner', 'cli-token')
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -34,6 +48,14 @@ function sleep(ms) {
 function getPort() {
   try {
     return parseInt(readFileSync(PORT_FILE, 'utf8').trim(), 10) || null
+  } catch {
+    return null
+  }
+}
+
+function getToken() {
+  try {
+    return readFileSync(TOKEN_FILE, 'utf8').trim() || null
   } catch {
     return null
   }
@@ -62,10 +84,11 @@ async function ensurePort() {
 
 async function request(path, method = 'GET', body = null) {
   const port = await ensurePort()
-  const options = {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : {}
-  }
+  const headers = {}
+  if (body) headers['Content-Type'] = 'application/json'
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const options = { method, headers }
   if (body) options.body = JSON.stringify(body)
 
   const res = await fetch(`http://127.0.0.1:${port}${path}`, options)
@@ -79,6 +102,11 @@ async function request(path, method = 'GET', body = null) {
 
 function isJsonFlag(arg) {
   return arg === '--json' || arg === '-j'
+}
+
+// Positional args (excludes --json/-j, keeps everything else incl. negative numbers)
+function positional(args) {
+  return args.filter(a => !isJsonFlag(a))
 }
 
 function print(data, useJson) {
@@ -105,12 +133,17 @@ function formatHuman(data) {
     return data.map((p, i) => `${i + 1}. ${p.name} (${p.trackCount} tracks, id: ${p.id})`).join('\n')
   }
 
+  // single playlist summary (create/rename result)
+  if (data.name !== undefined && data.trackCount !== undefined && data.id !== undefined) {
+    return `${data.name} (${data.trackCount} tracks, id: ${data.id})`
+  }
+
   // source list
   if (Array.isArray(data) && data[0]?.type !== undefined) {
     return data.map((s, i) => `${i + 1}. ${s.name} [${s.type}] (id: ${s.id})`).join('\n')
   }
 
-  // search results
+  // search / favorites results
   if (data.tracks && Array.isArray(data.tracks)) {
     if (data.tracks.length === 0) return 'No tracks found.'
     return data.tracks.map((t, i) =>
@@ -118,11 +151,19 @@ function formatHuman(data) {
     ).join('\n')
   }
 
+  // history entries
+  if (data.entries && Array.isArray(data.entries)) {
+    if (data.entries.length === 0) return 'No history.'
+    return data.entries.map((e, i) =>
+      `${i + 1}. ${e.track.title} — ${e.track.artist || 'unknown'} (${new Date(e.playedAt).toLocaleString()})`
+    ).join('\n')
+  }
+
   // play result
   if (data.track) {
     return `▶ ${data.track.title} — ${data.track.artist || 'unknown'} [${data.track.sourceId}]`
   }
-  if (data.trackCount !== undefined) {
+  if (data.trackCount !== undefined && data.ok) {
     return `▶ Playing playlist (${data.trackCount} tracks)`
   }
 
@@ -137,6 +178,7 @@ function formatHuman(data) {
     if (pb.currentTrack) {
       lines.push(`  ${playIcon} ${pb.currentTrack.title} — ${pb.currentTrack.artist || 'unknown'}`)
       lines.push(`    source: ${pb.currentTrack.sourceId} | id: ${pb.currentTrack.id}`)
+      lines.push(`    ${formatTime(pb.positionSec)} / ${formatTime(pb.durationSec)} | volume: ${Math.round((pb.volume ?? 0) * 100)}%`)
     } else {
       lines.push(`  ${playIcon} No track loaded`)
     }
@@ -159,21 +201,54 @@ function formatHuman(data) {
 const HELP = `corner CLI — remote control for the corner music player
 
 Usage:
-  corner help                      show this help
-  corner status                    show playback status
-  corner toggle                    toggle play/pause
-  corner next                      next track
-  corner prev                      previous track
-  corner shuffle                   toggle shuffle
-  corner repeat                    cycle repeat mode (off → all → one)
-  corner playlists                  list playlists
-  corner sources                    list sources
-  corner search <query>            search tracks
-  corner play --playlist-id <id>   play a playlist
-  corner play --track-id <id>      play a single track
-  corner play --query <query>      search & play first match
+  corner help                             show this help
+  corner status                           show playback status
+  corner toggle                           toggle play/pause
+  corner next                             next track
+  corner prev                             previous track
+  corner shuffle                          toggle shuffle
+  corner repeat                           cycle repeat mode (off → all → one)
+  corner volume <0..1>                    set volume
+  corner seek <sec> | +<sec> | -<sec>     seek absolute / relative
+  corner playlists                        list playlists
+  corner playlist create <name>           create a playlist
+  corner playlist rename <id> <name>      rename a playlist
+  corner playlist delete <id>             delete a playlist
+  corner playlist tracks <id>             list playlist tracks
+  corner playlist add <id> <trackId>      add a track to a playlist
+  corner playlist remove <id> <trackId>   remove a track from a playlist
+  corner sources                          list sources
+  corner search <query>                   search tracks
+  corner play --playlist-id <id>          play a playlist
+  corner play --track-id <id>             play a single track
+  corner play --query <query>             search & play first match
+  corner favorites                        list favorite tracks
+  corner favorite <trackId>               add to favorites
+  corner unfavorite <trackId>             remove from favorites
+  corner history [limit]                  show recently played tracks
+  corner events                           stream playback events (SSE)
 
 Add --json or -j to any command for JSON output.`
+
+async function streamEvents() {
+  const port = await ensurePort()
+  const headers = {}
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const res = await fetch(`http://127.0.0.1:${port}/events`, { headers })
+  if (!res.ok) {
+    console.error(`HTTP ${res.status}`)
+    process.exit(1)
+  }
+  process.stdout.write('Listening for playback events (Ctrl-C to stop)...\n')
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    process.stdout.write(decoder.decode(value, { stream: true }))
+  }
+}
 
 async function main() {
   const args = process.argv.slice(2)
@@ -185,7 +260,7 @@ async function main() {
   const cmd = args[0]
   const rest = args.slice(1)
   const useJson = rest.some(isJsonFlag)
-  const flags = rest.filter(a => !a.startsWith('-'))
+  const flags = positional(rest)
 
   try {
     switch (cmd) {
@@ -258,6 +333,137 @@ async function main() {
       case 'repeat': {
         const data = await request('/repeat', 'POST')
         print(data, useJson)
+        break
+      }
+      case 'volume': {
+        if (flags.length === 0) {
+          console.error('Usage: corner volume <0..1>')
+          process.exit(1)
+        }
+        const volume = parseFloat(flags[0])
+        if (!Number.isFinite(volume)) {
+          console.error('Invalid volume (expected 0..1)')
+          process.exit(1)
+        }
+        const data = await request('/volume', 'POST', { volume })
+        print(data, useJson)
+        break
+      }
+      case 'seek': {
+        if (flags.length === 0) {
+          console.error('Usage: corner seek <seconds> | +<seconds> | -<seconds>')
+          process.exit(1)
+        }
+        const arg = flags[0]
+        const value = parseFloat(arg)
+        if (!Number.isFinite(value)) {
+          console.error('Invalid seek position')
+          process.exit(1)
+        }
+        const body = arg.startsWith('+') || arg.startsWith('-')
+          ? { offsetSec: value }
+          : { positionSec: value }
+        const data = await request('/seek', 'POST', body)
+        print(data, useJson)
+        break
+      }
+      case 'favorites':
+      case 'favs': {
+        const data = await request('/favorites')
+        print(data, useJson)
+        break
+      }
+      case 'favorite':
+      case 'fav': {
+        if (flags.length === 0) {
+          console.error('Usage: corner favorite <trackId>')
+          process.exit(1)
+        }
+        const data = await request(`/favorites/${encodeURIComponent(flags[0])}`, 'PUT')
+        print(data, useJson)
+        break
+      }
+      case 'unfavorite':
+      case 'unfav': {
+        if (flags.length === 0) {
+          console.error('Usage: corner unfavorite <trackId>')
+          process.exit(1)
+        }
+        const data = await request(`/favorites/${encodeURIComponent(flags[0])}`, 'DELETE')
+        print(data, useJson)
+        break
+      }
+      case 'history': {
+        const limit = flags[0] ? `?limit=${encodeURIComponent(flags[0])}` : ''
+        const data = await request(`/history${limit}`)
+        print(data, useJson)
+        break
+      }
+      case 'events': {
+        await streamEvents()
+        break
+      }
+      case 'playlist': {
+        const [sub, ...subArgs] = flags
+        switch (sub) {
+          case 'create': {
+            if (subArgs.length === 0) {
+              console.error('Usage: corner playlist create <name>')
+              process.exit(1)
+            }
+            const data = await request('/playlists', 'POST', { name: subArgs.join(' ') })
+            print(data, useJson)
+            break
+          }
+          case 'rename': {
+            if (subArgs.length < 2) {
+              console.error('Usage: corner playlist rename <id> <name>')
+              process.exit(1)
+            }
+            const data = await request(`/playlists/${encodeURIComponent(subArgs[0])}`, 'PATCH', { name: subArgs.slice(1).join(' ') })
+            print(data, useJson)
+            break
+          }
+          case 'delete': {
+            if (subArgs.length === 0) {
+              console.error('Usage: corner playlist delete <id>')
+              process.exit(1)
+            }
+            const data = await request(`/playlists/${encodeURIComponent(subArgs[0])}`, 'DELETE')
+            print(data, useJson)
+            break
+          }
+          case 'tracks': {
+            if (subArgs.length === 0) {
+              console.error('Usage: corner playlist tracks <id>')
+              process.exit(1)
+            }
+            const data = await request(`/playlists/${encodeURIComponent(subArgs[0])}/tracks`)
+            print(data, useJson)
+            break
+          }
+          case 'add': {
+            if (subArgs.length < 2) {
+              console.error('Usage: corner playlist add <id> <trackId>')
+              process.exit(1)
+            }
+            const data = await request(`/playlists/${encodeURIComponent(subArgs[0])}/tracks`, 'POST', { trackId: subArgs[1] })
+            print(data, useJson)
+            break
+          }
+          case 'remove': {
+            if (subArgs.length < 2) {
+              console.error('Usage: corner playlist remove <id> <trackId>')
+              process.exit(1)
+            }
+            const data = await request(`/playlists/${encodeURIComponent(subArgs[0])}/tracks/${encodeURIComponent(subArgs[1])}`, 'DELETE')
+            print(data, useJson)
+            break
+          }
+          default:
+            console.error('Usage: corner playlist <create|rename|delete|tracks|add|remove> ...')
+            process.exit(1)
+        }
         break
       }
       case 'status': {

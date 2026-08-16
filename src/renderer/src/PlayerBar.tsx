@@ -10,7 +10,11 @@ interface PlayerBarProps {
   repeatMode: 'off' | 'all' | 'one'
   playlists: PlaylistSummary[]
   remoteTogglePlay: number
+  remoteVolume: { seq: number; value: number }
+  remoteSeek: { seq: number; value: number }
   onPlayingChange(playing: boolean): void
+  onVolumeChange(volume: number): void
+  onPositionChange(positionSec: number, durationSec: number): void
   onShuffleChange(shuffle: boolean): void
   onRepeatChange(): void
   onTemporaryEnded(): void
@@ -48,7 +52,11 @@ export default function PlayerBar({
   repeatMode,
   playlists,
   remoteTogglePlay,
+  remoteVolume,
+  remoteSeek,
   onPlayingChange,
+  onVolumeChange,
+  onPositionChange,
   onShuffleChange,
   onRepeatChange,
   onTemporaryEnded,
@@ -89,7 +97,23 @@ export default function PlayerBar({
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume
-  }, [volume])
+    onVolumeChange(volume)
+  }, [volume, onVolumeChange])
+
+  // Remote volume command from CLI
+  useEffect(() => {
+    if (remoteVolume.seq === 0) return
+    setVolume(remoteVolume.value)
+  }, [remoteVolume.seq, remoteVolume.value])
+
+  // Remote seek command from CLI
+  useEffect(() => {
+    if (remoteSeek.seq === 0) return
+    const audio = audioRef.current
+    if (!audio || !currentTrack) return
+    audio.currentTime = remoteSeek.value
+    setCurrentTime(remoteSeek.value)
+  }, [remoteSeek.seq, remoteSeek.value, currentTrack])
 
   // Remote toggle play from CLI
   const toggleRef = useRef(togglePlayback)
@@ -184,9 +208,18 @@ export default function PlayerBar({
       <audio
         ref={audioRef}
         preload="metadata"
-        onLoadedMetadata={event => setDuration(event.currentTarget.duration)}
-        onDurationChange={event => setDuration(event.currentTarget.duration)}
-        onTimeUpdate={event => setCurrentTime(event.currentTarget.currentTime)}
+        onLoadedMetadata={event => {
+          setDuration(event.currentTarget.duration)
+          onPositionChange(event.currentTarget.currentTime, event.currentTarget.duration)
+        }}
+        onDurationChange={event => {
+          setDuration(event.currentTarget.duration)
+          onPositionChange(event.currentTarget.currentTime, event.currentTarget.duration)
+        }}
+        onTimeUpdate={event => {
+          setCurrentTime(event.currentTarget.currentTime)
+          onPositionChange(event.currentTarget.currentTime, event.currentTarget.duration)
+        }}
         onPlay={() => { setIsPlaying(true); onPlayingChange(true) }}
         onPause={() => { setIsPlaying(false); onPlayingChange(false) }}
         onEnded={handleEnded}

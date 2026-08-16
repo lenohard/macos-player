@@ -38,7 +38,7 @@ import { LibraryService } from './library'
 import { fetchWithElectronNet, isAsciiHeaderValue } from './media-net'
 import { WebDAVService } from './webdav'
 import { syncWebDAVDirectory, resyncWebDAVDirectory } from './webdav-sync'
-import { startCliServer, stopCliServer, setPlaybackState } from './cli-server'
+import { startCliServer, stopCliServer, setPlaybackState, ackRemoteCommand } from './cli-server'
 
 const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.wav'])
 
@@ -58,6 +58,7 @@ app.setName('corner')
 
 let mainWindow: BrowserWindow | null = null
 let library: LibraryService | null = null
+let lastPlayedTrackId: string | null = null
 const baiduService = new BaiduService()
 const webdavService = new WebDAVService()
 const aiService = new AiService()
@@ -363,7 +364,21 @@ ipcMain.handle(IPC_CHANNELS.updateCheck, () => appUpdater.checkForUpdates())
 ipcMain.handle(IPC_CHANNELS.updateDownload, () => appUpdater.downloadUpdate())
 ipcMain.handle(IPC_CHANNELS.updateInstall, () => appUpdater.quitAndInstall())
 ipcMain.handle(IPC_CHANNELS.cliInstall, () => installCli())
-ipcMain.handle(IPC_CHANNELS.playbackPushState, (_event, state: PlaybackState): void => setPlaybackState(state))
+ipcMain.handle(IPC_CHANNELS.playbackPushState, (_event, state: PlaybackState): void => {
+  setPlaybackState(state)
+  const trackId = state.currentTrack?.id ?? null
+  if (trackId && trackId !== lastPlayedTrackId && state.isPlaying) {
+    lastPlayedTrackId = trackId
+    try {
+      getLibrary().recordPlay(trackId)
+    } catch {
+      // 历史记录失败不影响播放状态上报
+    }
+  }
+})
+ipcMain.handle(IPC_CHANNELS.playbackAckCommand, (_event, commandId: string): void => {
+  ackRemoteCommand(commandId)
+})
 
 ipcMain.handle(IPC_CHANNELS.aiGetConfig, () => aiService.getConfig())
 ipcMain.handle(IPC_CHANNELS.aiRevealApiKey, () => aiService.revealApiKey())
