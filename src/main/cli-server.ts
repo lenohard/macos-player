@@ -213,7 +213,11 @@ async function handleRequest(
     // GET /playlists
     if (method === 'GET' && path === '/playlists') {
       const playlists = ctx.library.listPlaylists()
-      return jsonReply(res, 200, playlists)
+      const favorites = ctx.library.listFavoriteTracks()
+      return jsonReply(res, 200, [
+        { id: '__favorites__', name: '我喜欢', trackCount: favorites.length, updatedAt: Date.now(), builtin: true },
+        ...playlists,
+      ])
     }
 
     // POST /playlists — create
@@ -305,9 +309,12 @@ async function handleRequest(
 
       // playlist play
       if (body.playlistId) {
-        const tracks = ctx.library.listPlaylistTracks(String(body.playlistId))
+        const id = String(body.playlistId)
+        const tracks = id === '__favorites__'
+          ? ctx.library.listFavoriteTracks()
+          : ctx.library.listPlaylistTracks(id)
         if (tracks.length === 0) {
-          return jsonReply(res, 404, { error: 'Playlist not found or empty' })
+          return jsonReply(res, 404, { error: id === '__favorites__' ? '还没有收藏任何歌曲' : 'Playlist not found or empty' })
         }
         const sent = await sendRemoteCommand(ctx, { action: 'play', tracks })
         return jsonReply(res, 200, { ok: sent, trackCount: tracks.length })
