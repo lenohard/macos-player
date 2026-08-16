@@ -57,6 +57,13 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`
 }
 
+function formatDuration(seconds: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return ''
+  const minutes = Math.floor(seconds / 60)
+  const remaining = Math.floor(seconds % 60)
+  return `${minutes}:${remaining.toString().padStart(2, '0')}`
+}
+
 function messageFrom(error: unknown, fallback: string): string {
   if (!(error instanceof Error)) return fallback
   return error.message.replace(/^Error invoking remote method '[^']+': Error: /, '') || fallback
@@ -101,6 +108,7 @@ type MainView =
   | { kind: 'source'; sourceId: string }
   | { kind: 'playlist'; playlistId: string }
   | { kind: 'queue' }
+  | { kind: 'favorites' }
   | { kind: 'settings' }
   | { kind: 'trackDetail'; trackId: string; returnTo: MainView }
 
@@ -116,6 +124,7 @@ export default function App() {
   const [librarySearch, setLibrarySearch] = useState('')
   const [playlistSearch, setPlaylistSearch] = useState('')
   const [playlistTracks, setPlaylistTracks] = useState<Track[]>([])
+  const [favoriteTracks, setFavoriteTracks] = useState<Track[]>([])
   const [tracks, setTracks] = useState<Track[]>([])
   const [currentIndex, setCurrentIndex] = useState(-1)
   const [shuffle, setShuffle] = useState(false)
@@ -191,6 +200,14 @@ export default function App() {
     }
   }, [])
 
+  const refreshFavorites = useCallback(async (): Promise<void> => {
+    try {
+      setFavoriteTracks(await window.api.favoritesList())
+    } catch {
+      setFavoriteTracks([])
+    }
+  }, [])
+
   const loadLibraryPage = useCallback(async (sourceId: string, offset = 0, search?: string): Promise<void> => {
     const seq = ++libraryRequestSeq.current
     const query = (search ?? librarySearchRef.current).trim()
@@ -244,9 +261,29 @@ export default function App() {
     replaceQueueAndPlay(pickRandomTracks(playlistTracks, 20))
   }
 
+  function playAllFromFavorites(): void {
+    if (favoriteTracks.length === 0) return
+    replaceQueueAndPlay(favoriteTracks)
+  }
+
+  function playRandomTwentyFromFavorites(): void {
+    if (favoriteTracks.length === 0) return
+    replaceQueueAndPlay(pickRandomTracks(favoriteTracks, 20))
+  }
+
+  async function removeFavorite(trackId: string): Promise<void> {
+    try {
+      await window.api.favoritesRemove(trackId)
+      setFavoriteTracks(tracks => tracks.filter(track => track.id !== trackId))
+    } catch (reason) {
+      setError(messageFrom(reason, '取消收藏失败'))
+    }
+  }
+
   useEffect(() => {
     window.api.getSources().then(setSources).catch(() => setError('无法载入音乐来源'))
     void refreshPlaylists()
+    void refreshFavorites()
     window.api.baiduGetStatus()
       .then(status => {
         setBaiduStatus(status)
@@ -271,7 +308,7 @@ export default function App() {
 
     const unsubscribe = window.api.onSyncProgress(progress => setSyncProgress(progress))
     return unsubscribe
-  }, [loadLibraryPage, refreshPlaylists])
+  }, [loadLibraryPage, refreshPlaylists, refreshFavorites])
 
   useEffect(() => {
     void window.api.updateGetStatus().then(setUpdateSnapshot).catch(() => {})
@@ -412,6 +449,10 @@ export default function App() {
     }
     void refreshPlaylistTracks(activePlaylistId)
   }, [activePlaylistId])
+
+  useEffect(() => {
+    if (mainView.kind === 'favorites') void refreshFavorites()
+  }, [mainView.kind, refreshFavorites])
 
   function replaceQueueAndPlay(queue: Track[]): void {
     setTemporaryTrack(null)
@@ -850,6 +891,7 @@ export default function App() {
   const isBaidu = mainView.kind === 'source' && activeSourceId === 'baidu'
   const isQuark = mainView.kind === 'source' && activeSourceId === 'quark'
   const isPlaylistView = mainView.kind === 'playlist'
+  const isFavoritesView = mainView.kind === 'favorites'
   const currentTrack = temporaryTrack ?? tracks[currentIndex]
   const currentTrackId = currentTrack?.id ?? null
   const detailReturnView = mainView.kind === 'trackDetail' ? mainView.returnTo : null
@@ -907,6 +949,14 @@ export default function App() {
             <span className="source-icon source-local" aria-hidden="true">≡</span>
             <span>播放列表</span>
             <span className="source-status">{tracks.length}</span>
+          </button>
+          <button
+            className={`source-button ${mainView.kind === 'favorites' ? 'active' : ''}`}
+            onClick={() => setMainView({ kind: 'favorites' })}
+          >
+            <span className="source-icon source-local" aria-hidden="true">❤</span>
+            <span>我喜欢</span>
+            <span className="source-status">{favoriteTracks.length}</span>
           </button>
         </nav>
 
@@ -966,22 +1016,26 @@ export default function App() {
                 ? '偏好设置'
                 : mainView.kind === 'queue'
                   ? '播放列表'
-                  : isPlaylistView
-                    ? '歌单'
-                    : mainView.kind === 'trackDetail'
-                      ? '曲目详情'
-                      : '音乐库'}
+                  : mainView.kind === 'favorites'
+                    ? '收藏'
+                    : isPlaylistView
+                      ? '歌单'
+                      : mainView.kind === 'trackDetail'
+                        ? '曲目详情'
+                        : '音乐库'}
             </p>
             <h1>
               {mainView.kind === 'settings'
                 ? settingsSection === 'connections' ? '连接' : settingsSection === 'ai' ? '大模型' : '关于 corner'
                 : mainView.kind === 'queue'
                   ? '当前播放'
-                  : isPlaylistView
-                    ? activePlaylist?.name ?? '歌单'
-                    : mainView.kind === 'trackDetail'
-                      ? detailTrack?.title ?? '曲目'
-                      : activeSource?.name ?? '音乐'}
+                  : mainView.kind === 'favorites'
+                    ? '我喜欢'
+                    : isPlaylistView
+                      ? activePlaylist?.name ?? '歌单'
+                      : mainView.kind === 'trackDetail'
+                        ? detailTrack?.title ?? '曲目'
+                        : activeSource?.name ?? '音乐'}
             </h1>
           </div>
           {isLocal && (
@@ -1172,6 +1226,82 @@ export default function App() {
                 {playlistTracks.length > 0 && visiblePlaylistRows.length === 0 && (
                   <div className="directory-empty">没有匹配的曲目。</div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {isFavoritesView && (
+            <div className="library-panel playlist-panel">
+              <div className="panel-header-row playlist-panel-header">
+                <p className="panel-title">{favoriteTracks.length} 首 · 我喜欢的音乐</p>
+                <div className="playlist-actions">
+                  <button
+                    className="primary-button"
+                    onClick={playAllFromFavorites}
+                    disabled={favoriteTracks.length === 0}
+                  >
+                    全部播放
+                  </button>
+                  <button
+                    className="quiet-button"
+                    onClick={playRandomTwentyFromFavorites}
+                    disabled={favoriteTracks.length === 0}
+                  >
+                    随机选择20首
+                  </button>
+                </div>
+              </div>
+              <div className="track-table with-actions favorite-table" role="table" aria-label="我喜欢的音乐">
+                <div className="track-table-header" role="row">
+                  <span>#</span><span>标题</span><span>来源</span>
+                </div>
+                {favoriteTracks.map((track, rowIndex) => (
+                  <div
+                    key={track.id}
+                    className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
+                    role="row"
+                    tabIndex={0}
+                    onClick={() => openTrackDetail(track)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        openTrackDetail(track)
+                      }
+                    }}
+                    aria-label={`${track.title}，${trackSourceLabel(track.sourceId)}`}
+                  >
+                    <span className="track-number">{track.id === currentTrackId ? '▶' : rowIndex + 1}</span>
+                    <span className="track-name-cell">
+                      <span className="track-name">{track.title}</span>
+                      <span className="track-artist">
+                        {track.artist ?? trackSourceLabel(track.sourceId)}
+                        {track.durationSec != null ? ` · ${formatDuration(track.durationSec)}` : ''}
+                      </span>
+                    </span>
+                    <span className="track-source">{trackSourceLabel(track.sourceId)}</span>
+                    <button
+                      className="row-play-button"
+                      aria-label={`播放 ${track.title}`}
+                      onClick={event => {
+                        event.stopPropagation()
+                        playTemporary(track)
+                      }}
+                    >
+                      ▶
+                    </button>
+                    <button
+                      className="quiet-button danger row-remove-button"
+                      aria-label={`取消收藏 ${track.title}`}
+                      onClick={event => {
+                        event.stopPropagation()
+                        void removeFavorite(track.id)
+                      }}
+                    >
+                      取消收藏
+                    </button>
+                  </div>
+                ))}
+                {favoriteTracks.length === 0 && <div className="directory-empty">还没有喜欢的歌曲。</div>}
               </div>
             </div>
           )}

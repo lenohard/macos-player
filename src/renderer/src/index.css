@@ -1043,6 +1043,18 @@ input:focus-visible {
   color: #fff;
 }
 
+.track-table.with-actions.favorite-table .track-table-header,
+.track-table.with-actions.favorite-table .track-row {
+  grid-template-columns: 48px minmax(0, 1fr) 110px 36px 96px;
+}
+
+.row-remove-button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .empty-state {
   display: flex;
   flex-direction: column;

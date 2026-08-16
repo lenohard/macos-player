@@ -325,6 +325,11 @@ ipcMain.handle(IPC_CHANNELS.playlistRemoveTrack, (_event, playlistId: string, tr
   getLibrary().removeTrackFromPlaylist(playlistId, trackId)
 })
 
+ipcMain.handle(IPC_CHANNELS.favoritesList, () => getLibrary().listFavoriteTracks())
+ipcMain.handle(IPC_CHANNELS.favoritesRemove, (_event, trackId: string) => {
+  getLibrary().removeFavorite(trackId)
+})
+
 ipcMain.handle(IPC_CHANNELS.trackContextMenu, (event, request: TrackContextMenuRequest) =>
   new Promise<TrackContextMenuAction | null>(resolve => {
     let selected: TrackContextMenuAction | null = null

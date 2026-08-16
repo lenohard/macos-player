@@ -33,6 +33,8 @@ export const IPC_CHANNELS = {
   playlistListTracks: 'playlist:listTracks',
   playlistAddTrack: 'playlist:addTrack',
   playlistRemoveTrack: 'playlist:removeTrack',
+  favoritesList: 'favorites:list',
+  favoritesRemove: 'favorites:remove',
   updateGetStatus: 'update:getStatus',
   updateCheck: 'update:check',
   updateDownload: 'update:download',
@@ -282,6 +284,8 @@ export interface IPCApi {
   playlistListTracks(playlistId: string): Promise<Track[]>
   playlistAddTrack(playlistId: string, trackId: string): Promise<void>
   playlistRemoveTrack(playlistId: string, trackId: string): Promise<void>
+  favoritesList(): Promise<Track[]>
+  favoritesRemove(trackId: string): Promise<void>
   updateGetStatus(): Promise<UpdateSnapshot>
   updateCheck(): Promise<UpdateSnapshot>
   updateDownload(): Promise<UpdateSnapshot>
