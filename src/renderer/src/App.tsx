@@ -280,6 +280,21 @@ export default function App() {
     }
   }
 
+  async function toggleCurrentFavorite(): Promise<void> {
+    const track = temporaryTrack ?? tracks[currentIndex]
+    if (!track) return
+    if (favoriteTracks.some(favorite => favorite.id === track.id)) {
+      await removeFavorite(track.id)
+      return
+    }
+    try {
+      await window.api.favoritesAdd(track.id)
+      setFavoriteTracks(favorites => [track, ...favorites.filter(favorite => favorite.id !== track.id)])
+    } catch (reason) {
+      setError(messageFrom(reason, '收藏失败'))
+    }
+  }
+
   useEffect(() => {
     window.api.getSources().then(setSources).catch(() => setError('无法载入音乐来源'))
     void refreshPlaylists()
@@ -1729,6 +1744,8 @@ export default function App() {
           setDurationSec(duration)
         }}
         onAddToPlaylist={playlistId => void addCurrentTrackToPlaylist(playlistId)}
+        isFavorite={currentTrack !== undefined && favoriteTracks.some(track => track.id === currentTrack.id)}
+        onToggleFavorite={() => void toggleCurrentFavorite()}
         onOpenDetail={() => {
           if (currentTrack) openTrackDetail(currentTrack)
         }}

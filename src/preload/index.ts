@@ -85,6 +85,7 @@ const api: IPCApi = {
   playlistRemoveTrack: (playlistId: string, trackId: string): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.playlistRemoveTrack, playlistId, trackId),
   favoritesList: (): Promise<Track[]> => ipcRenderer.invoke(IPC_CHANNELS.favoritesList),
+  favoritesAdd: (track: string | Track): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.favoritesAdd, track),
   favoritesRemove: (trackId: string): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.favoritesRemove, trackId),
   updateGetStatus: (): Promise<UpdateSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.updateGetStatus),

@@ -21,6 +21,8 @@ interface PlayerBarProps {
   onNext(): void
   onPrevious(): void
   onAddToPlaylist(playlistId: string): void
+  isFavorite: boolean
+  onToggleFavorite(): void
   onOpenDetail(): void
 }
 
@@ -63,6 +65,8 @@ export default function PlayerBar({
   onNext,
   onPrevious,
   onAddToPlaylist,
+  isFavorite,
+  onToggleFavorite,
   onOpenDetail
 }: PlayerBarProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -293,6 +297,15 @@ export default function PlayerBar({
             title="下一首"
           >
             ›
+          </button>
+          <button
+            className={`icon-button favorite-button ${isFavorite ? 'active-toggle' : ''}`}
+            onClick={onToggleFavorite}
+            disabled={!currentTrack}
+            aria-label={isFavorite ? '取消收藏' : '收藏'}
+            title={isFavorite ? '取消收藏' : '收藏'}
+          >
+            {isFavorite ? '♥' : '♡'}
           </button>
           <div className="add-to-playlist">
             <button

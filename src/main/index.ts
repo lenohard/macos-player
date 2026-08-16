@@ -326,6 +326,9 @@ ipcMain.handle(IPC_CHANNELS.playlistRemoveTrack, (_event, playlistId: string, tr
 })
 
 ipcMain.handle(IPC_CHANNELS.favoritesList, () => getLibrary().listFavoriteTracks())
+ipcMain.handle(IPC_CHANNELS.favoritesAdd, (_event, track: string | Track) => {
+  getLibrary().addFavorite(typeof track === 'string' ? track : track.id)
+})
 ipcMain.handle(IPC_CHANNELS.favoritesRemove, (_event, trackId: string) => {
   getLibrary().removeFavorite(trackId)
 })
