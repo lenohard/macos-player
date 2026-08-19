@@ -240,6 +240,58 @@ input:focus-visible {
   overflow-y: auto;
 }
 
+.native-badge {
+  padding: 1px 7px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.playlist-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.playlist-row .source-button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.playlist-delete {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.playlist-row:hover .playlist-delete {
+  opacity: 1;
+}
+
+.playlist-delete:hover {
+  color: #e5484d;
+  border-color: color-mix(in srgb, #e5484d 40%, var(--border));
+}
+
 .content-tabs {
   position: sticky;
   top: 0;

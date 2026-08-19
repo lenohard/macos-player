@@ -938,6 +938,17 @@ export default function App() {
     }
   }
 
+  async function deletePlaylist(id: string, name: string): Promise<void> {
+    if (!window.confirm(`确定删除歌单「${name}」？此操作不可撤销。`)) return
+    try {
+      await window.api.playlistDelete(id)
+      if (activePlaylistId === id) setMainView({ kind: 'queue' })
+      await refreshPlaylists()
+    } catch (reason) {
+      setError(messageFrom(reason, '无法删除歌单'))
+    }
+  }
+
   function sourceStatus(source: LibrarySource): string | null {
     if (source.type === 'local') return null
     if (source.type === 'quark') {
@@ -984,14 +995,6 @@ export default function App() {
 
         <p className="sidebar-label">音乐来源</p>
         <nav className="source-nav" aria-label="音乐来源">
-          <button
-            className={`source-button ${isAll ? 'active' : ''}`}
-            onClick={() => setMainView({ kind: 'source', sourceId: 'all' })}
-          >
-            <span className="source-icon source-local" aria-hidden="true">☰</span>
-            <span>所有</span>
-            <span className="source-status">{allTracksTotal}</span>
-          </button>
           {sources.map(source => {
             const status = sourceStatus(source)
             return (
@@ -1020,14 +1023,6 @@ export default function App() {
             <span>播放列表</span>
             <span className="source-status">{tracks.length}</span>
           </button>
-          <button
-            className={`source-button ${mainView.kind === 'favorites' ? 'active' : ''}`}
-            onClick={() => setMainView({ kind: 'favorites' })}
-          >
-            <span className="source-icon source-local" aria-hidden="true">❤</span>
-            <span>我喜欢</span>
-            <span className="source-status">{favoriteTracks.length}</span>
-          </button>
         </nav>
 
         <p className="sidebar-label">歌单</p>
@@ -1046,16 +1041,50 @@ export default function App() {
           </button>
         </div>
         <nav className="playlist-nav playlist-list" aria-label="歌单">
+          <button
+            className={`source-button native-playlist ${isAll ? 'active' : ''}`}
+            onClick={() => setMainView({ kind: 'source', sourceId: 'all' })}
+          >
+            <span className="source-icon source-local" aria-hidden="true">♬</span>
+            <span>所有歌曲</span>
+            <span className="native-badge">系统</span>
+            <span className="source-status">{allTracksTotal}</span>
+          </button>
+          <button
+            className={`source-button native-playlist ${mainView.kind === 'favorites' ? 'active' : ''}`}
+            onClick={() => setMainView({ kind: 'favorites' })}
+          >
+            <span className="source-icon source-local" aria-hidden="true">❤</span>
+            <span>我喜欢</span>
+            <span className="native-badge">系统</span>
+            <span className="source-status">{favoriteTracks.length}</span>
+          </button>
           {playlists.map(playlist => (
-            <button
+            <div
               key={playlist.id}
-              className={`source-button ${activePlaylistId === playlist.id ? 'active' : ''}`}
-              onClick={() => setMainView({ kind: 'playlist', playlistId: playlist.id })}
+              className={`playlist-row ${activePlaylistId === playlist.id ? 'active' : ''}`}
             >
-              <span className="source-icon source-local" aria-hidden="true">♫</span>
-              <span>{playlist.name}</span>
-              <span className="source-status">{playlist.trackCount}</span>
-            </button>
+              <button
+                className="source-button"
+                onClick={() => setMainView({ kind: 'playlist', playlistId: playlist.id })}
+              >
+                <span className="source-icon source-local" aria-hidden="true">♫</span>
+                <span>{playlist.name}</span>
+                <span className="source-status">{playlist.trackCount}</span>
+              </button>
+              <button
+                className="playlist-delete"
+                type="button"
+                aria-label={`删除歌单 ${playlist.name}`}
+                title="删除歌单"
+                onClick={event => {
+                  event.stopPropagation()
+                  void deletePlaylist(playlist.id, playlist.name)
+                }}
+              >
+                ×
+              </button>
+            </div>
           ))}
         </nav>
 
@@ -1247,6 +1276,12 @@ export default function App() {
                     disabled={playlistTracks.length === 0}
                   >
                     随机选择20首
+                  </button>
+                  <button
+                    className="quiet-button danger"
+                    onClick={() => activePlaylist && void deletePlaylist(activePlaylist.id, activePlaylist.name)}
+                  >
+                    删除歌单
                   </button>
                   <SearchField
                     value={playlistSearch}
