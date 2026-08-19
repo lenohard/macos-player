@@ -148,6 +148,9 @@ function createWindow(): void {
       spellcheck: false
     }
   })
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -395,7 +398,12 @@ ipcMain.handle(IPC_CHANNELS.aiTestConnection, () => aiService.testConnection())
 
 app.whenReady().then(() => {
   getLibrary()
-  startCliServer(getLibrary(), () => mainWindow)
+  startCliServer(getLibrary(), () => {
+    // 窗口被关闭（macOS 不退出应用）时自动重建，保证遥控器命令始终可送达
+    if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
+    createWindow()
+    return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+  })
   installApplicationMenu()
 
   protocol.handle('app-media', request => {

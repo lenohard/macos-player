@@ -36,6 +36,16 @@ let authToken: string | null = null
 const eventSubscribers = new Set<ServerResponse>()
 const pendingCommands = new Map<string, PendingCommand>()
 
+/** 从列表中随机抽取 count 首（Fisher–Yates 部分洗牌） */
+function pickRandomTracks<T>(source: T[], count: number): T[] {
+  const indices = Array.from({ length: source.length }, (_, index) => index)
+  for (let index = indices.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(Math.random() * (index + 1))
+    ;[indices[index], indices[swap]] = [indices[swap], indices[index]]
+  }
+  return indices.slice(0, count).map(index => source[index])
+}
+
 export function setPlaybackState(state: PlaybackState | null): void {
   playbackState = state
   broadcast({ type: 'playback', state })
@@ -138,7 +148,28 @@ function searchTracks(ctx: CliServerContext, query: string, limit: number): Trac
 
 function sendRemoteCommand(ctx: CliServerContext, command: RemoteCommand): Promise<boolean> {
   const win = ctx.getMainWindow()
-  if (!win) return Promise.resolve(false)
+  if (!win || win.isDestroyed()) return Promise.resolve(false)
+  // 新建窗口刚触发时渲染进程尚未就绪，等待页面加载完成再发命令，避免消息丢失
+  if (win.webContents.isLoading()) {
+    return new Promise<boolean>(resolve => {
+      const onLoaded = (): void => {
+        win.webContents.removeListener('did-finish-load', onLoaded)
+        resolve(dispatchRemoteCommand(win, command))
+      }
+      const timeout = setTimeout(() => {
+        win.webContents.removeListener('did-finish-load', onLoaded)
+        resolve(false)
+      }, COMMAND_ACK_TIMEOUT_MS)
+      win.webContents.once('did-finish-load', () => {
+        clearTimeout(timeout)
+        onLoaded()
+      })
+    })
+  }
+  return dispatchRemoteCommand(win, command)
+}
+
+function dispatchRemoteCommand(win: BrowserWindow, command: RemoteCommand): Promise<boolean> {
   const commandId = randomUUID()
   return new Promise<boolean>(resolve => {
     const timer = setTimeout(() => {
@@ -146,7 +177,19 @@ function sendRemoteCommand(ctx: CliServerContext, command: RemoteCommand): Promi
       resolve(false)
     }, COMMAND_ACK_TIMEOUT_MS)
     pendingCommands.set(commandId, { resolve, timer })
-    win.webContents.send(PLAYBACK_REMOTE_COMMAND_CHANNEL, { ...command, id: commandId })
+    if (win.isDestroyed()) {
+      clearTimeout(timer)
+      pendingCommands.delete(commandId)
+      resolve(false)
+      return
+    }
+    try {
+      win.webContents.send(PLAYBACK_REMOTE_COMMAND_CHANNEL, { ...command, id: commandId })
+    } catch {
+      clearTimeout(timer)
+      pendingCommands.delete(commandId)
+      resolve(false)
+    }
   })
 }
 
@@ -310,11 +353,15 @@ async function handleRequest(
       // playlist play
       if (body.playlistId) {
         const id = String(body.playlistId)
-        const tracks = id === '__favorites__'
+        let tracks = id === '__favorites__'
           ? ctx.library.listFavoriteTracks()
           : ctx.library.listPlaylistTracks(id)
         if (tracks.length === 0) {
           return jsonReply(res, 404, { error: id === '__favorites__' ? '还没有收藏任何歌曲' : 'Playlist not found or empty' })
+        }
+        // random20: 从歌单随机抽 20 首播放（与桌面端行为一致），避免大歌单塞满队列
+        if (body.mode === 'random20') {
+          tracks = pickRandomTracks(tracks, 20)
         }
         const sent = await sendRemoteCommand(ctx, { action: 'play', tracks })
         return jsonReply(res, 200, { ok: sent, trackCount: tracks.length })
