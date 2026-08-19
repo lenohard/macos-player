@@ -398,12 +398,26 @@ ipcMain.handle(IPC_CHANNELS.aiTestConnection, () => aiService.testConnection())
 
 app.whenReady().then(() => {
   getLibrary()
-  startCliServer(getLibrary(), () => {
-    // 窗口被关闭（macOS 不退出应用）时自动重建，保证遥控器命令始终可送达
-    if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
-    createWindow()
-    return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
-  })
+  startCliServer(
+    getLibrary(),
+    () => {
+      // 窗口被关闭（macOS 不退出应用）时自动重建，保证遥控器命令始终可送达
+      if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
+      createWindow()
+      return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+    },
+    async (rootPath: string) => {
+      const lib = getLibrary()
+      const normalized = rootPath === '/' ? '/' : rootPath.replace(/\/+$/, '') || '/'
+      if (lib.listLibraryRoots('baidu').some(root => root.root_path === normalized)) {
+        return resyncBaiduDirectory(baiduService, lib, normalized, emitSyncProgress)
+      }
+      if (lib.listLibraryRoots('quark').some(root => root.root_path === normalized)) {
+        return resyncWebDAVDirectory(webdavService, lib, normalized, emitSyncProgress)
+      }
+      throw new Error('该目录尚未导入，请先执行导入。')
+    }
+  )
   installApplicationMenu()
 
   protocol.handle('app-media', request => {

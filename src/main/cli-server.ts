@@ -5,6 +5,7 @@ import { join } from 'path'
 import { app, type BrowserWindow } from 'electron'
 import {
   PLAYBACK_REMOTE_COMMAND_CHANNEL,
+  type BaiduImportResult,
   type PlaybackState,
   type RemoteCommand,
   type Track
@@ -23,6 +24,16 @@ const COMMAND_ACK_TIMEOUT_MS = 3000
 interface CliServerContext {
   library: LibraryService
   getMainWindow: () => BrowserWindow | null
+  resyncLibrary: (rootPath: string) => Promise<BaiduImportResult>
+}
+
+interface CliLibrary {
+  id: string
+  sourceId: string
+  rootPath: string
+  playlistId: string | null
+  lastSyncAt: number | null
+  lastSyncStatus: string | null
 }
 
 interface PendingCommand {
@@ -251,6 +262,46 @@ async function handleRequest(
     // GET /sources
     if (method === 'GET' && path === '/sources') {
       return jsonReply(res, 200, SOURCES)
+    }
+
+    // GET /libraries — 已导入的音乐库（library_roots，按 rootPath 区分）
+    if (method === 'GET' && path === '/libraries') {
+      const rows = [
+        ...ctx.library.listLibraryRoots('baidu'),
+        ...ctx.library.listLibraryRoots('quark')
+      ]
+      const libraries: CliLibrary[] = rows.map(root => ({
+        id: root.id,
+        sourceId: root.source_id,
+        rootPath: root.root_path,
+        playlistId: root.playlist_id,
+        lastSyncAt: root.last_sync_at,
+        lastSyncStatus: root.last_sync_status
+      }))
+      return jsonReply(res, 200, { libraries })
+    }
+
+    // POST /libraries/update — 更新（重扫）某个音乐库，body { rootPath }
+    if (method === 'POST' && path === '/libraries/update') {
+      const body = (await readJsonBody(req)) as Record<string, unknown> | null
+      const rootPath = typeof body?.rootPath === 'string' ? body.rootPath : ''
+      if (!rootPath) {
+        return jsonReply(res, 400, { error: 'Missing rootPath' })
+      }
+      try {
+        const result = await ctx.resyncLibrary(rootPath)
+        return jsonReply(res, 200, {
+          rootPath: result.rootPath,
+          playlistId: result.playlistId,
+          scanned: result.scanned,
+          added: result.added,
+          updated: result.updated,
+          removed: result.removed
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '同步失败'
+        return jsonReply(res, 404, { error: message })
+      }
     }
 
     // GET /playlists
@@ -489,8 +540,12 @@ async function handleRequest(
   }
 }
 
-export function startCliServer(library: LibraryService, getMainWindow: () => BrowserWindow | null): void {
-  const ctx: CliServerContext = { library, getMainWindow }
+export function startCliServer(
+  library: LibraryService,
+  getMainWindow: () => BrowserWindow | null,
+  resyncLibrary: (rootPath: string) => Promise<BaiduImportResult>
+): void {
+  const ctx: CliServerContext = { library, getMainWindow, resyncLibrary }
 
   authToken = randomBytes(16).toString('hex')
   writeTokenFile(authToken)

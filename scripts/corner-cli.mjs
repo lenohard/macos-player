@@ -218,6 +218,8 @@ Usage:
   corner playlist add <id> <trackId>      add a track to a playlist
   corner playlist remove <id> <trackId>   remove a track from a playlist
   corner sources                          list sources
+  corner libraries                        list imported music libraries
+  corner library update <rootPath>        re-sync/update a specific music library
   corner search <query>                   search tracks
   corner play --playlist-id <id>          play a playlist
   corner play --track-id <id>             play a single track
@@ -278,6 +280,29 @@ async function main() {
       case 'sources': {
         const data = await request('/sources')
         print(data, useJson)
+        break
+      }
+      case 'libraries': {
+        const data = await request('/libraries')
+        print(data, useJson)
+        break
+      }
+      case 'library': {
+        const [sub, ...subArgs] = flags
+        switch (sub) {
+          case 'update': {
+            if (subArgs.length === 0) {
+              console.error('Usage: corner library update <rootPath>')
+              process.exit(1)
+            }
+            const data = await request('/libraries/update', 'POST', { rootPath: subArgs.join(' ') })
+            print(data, useJson)
+            break
+          }
+          default:
+            console.error('Usage: corner library <update> ...')
+            process.exit(1)
+        }
         break
       }
       case 'search': {
