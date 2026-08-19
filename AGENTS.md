@@ -82,6 +82,12 @@ All channels live in `IPC_CHANNELS` and `IPCApi` in `src/shared/ipc.ts`. Sync pr
 
 When adding features: extend **shared types first**, then main handler, preload, renderer.
 
+## 音乐库 (music library) 概念
+
+- 一个「音乐库」= `library_roots` 表里的一行 = 一个**已导入的网盘根目录**（import root），以 `root_path` 区分（如 `/音乐`）。字段：`source_id`（baidu/quark）、`root_path`、`playlist_id`（导入时自动关联的歌单）、`last_sync_at/status`。示例见 `index.ts` 的 `baiduListRoots`。
+- 「更新某个音乐库」= 对那个 `rootPath` 重跑 resync（BFS 扫描该目录，增删改曲目 + 软删未见 + 更新关联歌单），返回 `BaiduImportResult { rootPath, playlistId, scanned, added, updated, removed, addedTracks, updatedTracks, removedTracks }`。
+- CLI：`corner libraries`（列出音乐库） / `corner library update <rootPath>`（更新指定库）。`cli-server.ts` 通过 `startCliServer(library, getMainWindow, resyncLibrary)` 注入的 `resyncLibrary(rootPath)` 回调（在 `index.ts` 接线，按 rootPath 匹配 baidu/quark 后调 `resyncBaiduDirectory`/`resyncWebDAVDirectory`）。
+
 ## CLI REST API
 
 Implemented in `src/main/cli-server.ts`; client is `scripts/corner-cli.mjs` (installed as `corner`). Server binds `127.0.0.1` on a random port written to `userData/cli-port`; an auth token is written to `userData/cli-token` (mode 0600) and must be sent as `Authorization: Bearer <token>` on every request except `GET /health`.
@@ -94,6 +100,8 @@ Endpoints (all JSON):
 | GET | `/status` | playback state (`playback` = `PlaybackState`) |
 | GET | `/events` | SSE stream of `{type:'playback',state}` |
 | GET | `/sources` | source list |
+| GET | `/libraries` | list imported music libraries (library_roots) |
+| POST | `/libraries/update` | re-sync a library: body `{rootPath}` → `{rootPath,playlistId,scanned,added,updated,removed}` |
 | GET/POST | `/playlists` | list / create (`{name}`) |
 | GET/PATCH/DELETE | `/playlists/:id` | get / rename / delete |
 | GET/POST | `/playlists/:id/tracks` | list / add (`{trackId}` or `{trackIds}`) |
@@ -184,6 +192,13 @@ Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by
 - 本机 **`GH_TOKEN` 环境变量会遮蔽 gh/keyring**；`gh` / `git push` 用 `env -u GH_TOKEN …`（见全局 agent memory）。
 - Vite 主配置文件名必须是 **`electron.vite.config.js`**（不是连字符变体），否则 main 外链/环境注入不生效。
 - 验证习惯：`npm run typecheck` → `npm run build` → 打包改动时加 `npm run dist`；IPC 改动顺序：**`src/shared/ipc.ts` → main → preload → renderer**。
+
+### 音乐库 = library_roots 一行（挂接歌单）
+
+- **音乐库** = 一个已导入的云端根目录（`library_roots` 一行：`source_id`/`root_path`/`playlist_id`）。更新 = 对该 `rootPath` 重新同步。
+- **⚠️ 悬空 playlist_id 导致 FK 失败（血泪教训）**：用户删除歌单时若不检查，`library_roots.playlist_id` 会指向一个已被删除的 `playlists` 行；后续 resync 的 `replacePlaylistTracks` 执行 `INSERT INTO playlist_tracks` 时，因 `playlist_tracks.playlist_id → playlists(id)` 外键而抛 `FOREIGN KEY constraint failed`（现象：`corner library update "<root>"` exit=1，约十几秒扫描后崩溃）。
+- **正确做法（已实现）**：① resync 前先 `library.ensurePlaylistForRoot(sourceId, rootPath)` —— 若关联歌单不存在则重建并修复 `library_roots.playlist_id`（自愈悬空引用，旧库也能恢复）；② `deletePlaylist` 若目标歌单被 `library_roots` 引用则直接 throw（「是音乐库的关联歌单，不能删除」），从源头杜绝悬空引用。
+- **`library_roots.playlist_id` 是无外键的裸列**：它不 `REFERENCES playlists(id)`，所以删除歌单不会自动 CASCADE，也检测不到悬空。重命名/删除歌单时务必走 guard。
 
 ## Remote
 

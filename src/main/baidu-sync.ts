@@ -182,9 +182,10 @@ export async function resyncBaiduDirectory(
     }
   }
 
+  const playlistId = library.ensurePlaylistForRoot('baidu', normalizedRoot)
   const removedTracks = library.finalizeBaiduRootSync(normalizedRoot, syncToken)
-  library.replacePlaylistTracks(root.playlist_id, seenTrackIds)
-  library.upsertLibraryRoot('baidu', normalizedRoot, root.playlist_id)
+  library.replacePlaylistTracks(playlistId, seenTrackIds)
+  library.upsertLibraryRoot('baidu', normalizedRoot, playlistId)
 
   emit({
     phase: 'done',
@@ -196,7 +197,7 @@ export async function resyncBaiduDirectory(
 
   return {
     rootPath: normalizedRoot,
-    playlistId: root.playlist_id,
+    playlistId,
     scanned: tracksUpserted,
     added: addedTracks.length,
     updated: updatedTracks.length,

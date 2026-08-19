@@ -50,7 +50,8 @@ export async function resyncWebDAVDirectory(provider: WebDAVService, library: Li
   const token=library.createSyncToken(); library.markCloudRootStale('quark',root,token); const queue=[root]; const ids:string[]=[]; let dirs=0; let count=0
   const addedTracks: SyncTrackDetail[] = []; const updatedTracks: SyncTrackDetail[] = []
   while(queue.length){const dir=queue.shift()!; for(const e of await provider.listDirectory(dir)){if(e.isDirectory)queue.push(e.path);else if(audio(e.name)){const outcome = library.upsertCloudTrack('quark',e,token); ids.push(outcome.trackId); count++; collectChange(library, outcome, addedTracks, updatedTracks)}} dirs++}
-  const removedTracks=library.finalizeCloudRootSync('quark',root,token); library.replacePlaylistTracks(info.playlist_id,ids); library.upsertLibraryRoot('quark',root,info.playlist_id)
+  const playlistId = library.ensurePlaylistForRoot('quark', root)
+  const removedTracks=library.finalizeCloudRootSync('quark',root,token); library.replacePlaylistTracks(playlistId,ids); library.upsertLibraryRoot('quark',root,playlistId)
   emit({phase:'done',currentPath:root,directoriesDone:dirs,tracksUpserted:count,message:`更新完成：新增 ${addedTracks.length} · 更新 ${updatedTracks.length} · 移除 ${removedTracks.length}`})
-  return {rootPath:root,playlistId:info.playlist_id,scanned:count,added:addedTracks.length,updated:updatedTracks.length,removed:removedTracks.length,addedTracks,updatedTracks,removedTracks}
+  return {rootPath:root,playlistId,scanned:count,added:addedTracks.length,updated:updatedTracks.length,removed:removedTracks.length,addedTracks,updatedTracks,removedTracks}
 }

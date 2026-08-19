@@ -326,6 +326,33 @@ export class LibraryService {
     `).run(randomUUID(), sourceId, normalized, playlistId, now)
   }
 
+  /**
+   * 确保某音乐库目录有可用的关联歌单。若 library_roots.playlist_id 指向的
+   * 歌单已被删除（悬空引用），则重建歌单并修复 library_roots 关联，避免
+   * 后续 replacePlaylistTracks 触发 playlist_tracks→playlists 外键失败。
+   */
+  ensurePlaylistForRoot(sourceId: 'baidu' | 'quark', rootPath: string): string {
+    const normalized = normalizeRootPrefix(rootPath)
+    const linked = this.db.prepare(`
+      SELECT p.id FROM library_roots lr
+      JOIN playlists p ON p.id = lr.playlist_id
+      WHERE lr.source_id = ? AND lr.root_path = ?
+    `).get(sourceId, normalized) as { id: string } | undefined
+    if (linked?.id) return linked.id
+
+    const fallbackName = normalized === '/' ? '音乐库' : basename(normalized) || '音乐库'
+    const playlist = this.createPlaylist(fallbackName)
+    const existing = this.db.prepare(`
+      SELECT id FROM library_roots WHERE source_id = ? AND root_path = ? LIMIT 1
+    `).get(sourceId, normalized) as { id: string } | undefined
+    if (existing) {
+      this.db.prepare('UPDATE library_roots SET playlist_id = ? WHERE id = ?').run(playlist.id, existing.id)
+    } else {
+      this.upsertLibraryRoot(sourceId, normalized, playlist.id)
+    }
+    return playlist.id
+  }
+
   listLibraryRoots(sourceId: string): LibraryRootRow[] {
     return this.db.prepare(`
       SELECT id, source_id, root_path, playlist_id, last_sync_at, last_sync_status
@@ -471,6 +498,10 @@ export class LibraryService {
   }
 
   deletePlaylist(id: string): void {
+    const libRoot = this.db.prepare(`
+      SELECT root_path FROM library_roots WHERE playlist_id = ? LIMIT 1
+    `).get(id) as { root_path: string } | undefined
+    if (libRoot) throw new Error(`「${libRoot.root_path}」是音乐库的关联歌单，不能删除。`)
     runInTransaction(this.db, () => {
       this.db.prepare('DELETE FROM playlist_tracks WHERE playlist_id = ?').run(id)
       this.db.prepare('DELETE FROM playlists WHERE id = ?').run(id)
