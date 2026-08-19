@@ -171,10 +171,9 @@ ipcMain.handle(IPC_CHANNELS.queueLoad, (): PlaybackQueueState | null =>
 
 ipcMain.handle(IPC_CHANNELS.getSources, (): LibrarySource[] => sources)
 
-ipcMain.handle(IPC_CHANNELS.listTracks, (_event, sourceId: string): Track[] => {
-  const page = getLibrary().listTracksPage(sourceId, 0, 10_000)
-  return page.tracks
-})
+ipcMain.handle(IPC_CHANNELS.listTracks, (_event, sourceId: string): Track[] =>
+  getLibrary().listAllTracks(sourceId)
+)
 
 ipcMain.handle(
   IPC_CHANNELS.listTracksPage,
@@ -252,7 +251,7 @@ ipcMain.handle(IPC_CHANNELS.webdavSaveConfig, async (_event, config) => {
 ipcMain.handle(IPC_CHANNELS.webdavListDirectory, (_event, path: string) => webdavService.listDirectory(path))
 ipcMain.handle(IPC_CHANNELS.webdavCreateTrack, (_event, entry: CloudEntry): Track => {
   if (entry.isDirectory) throw new Error('文件夹不能播放。')
-  const id = getLibrary().upsertCloudTrack('quark', entry, Date.now()); const row = getLibrary().getTrackRow(id)
+  const { trackId } = getLibrary().upsertCloudTrack('quark', entry, Date.now()); const row = getLibrary().getTrackRow(trackId)
   if (!row) throw new Error('无法创建播放条目。')
   return { id: row.id, title: row.title, artist: row.artist, durationSec: row.duration_sec, sourceId: row.source_id, playbackUrl: `app-media://${row.id}/audio` }
 })
@@ -271,7 +270,7 @@ ipcMain.handle(
 ipcMain.handle(IPC_CHANNELS.baiduCreateTrack, (_event, entry: CloudEntry): Track => {
   if (entry.isDirectory) throw new Error('文件夹不能播放。')
   const syncToken = Date.now()
-  const trackId = getLibrary().upsertBaiduTrack(entry, syncToken)
+  const { trackId } = getLibrary().upsertBaiduTrack(entry, syncToken)
   const row = getLibrary().getTrackRow(trackId)
   if (!row) throw new Error('无法创建播放条目。')
   return {

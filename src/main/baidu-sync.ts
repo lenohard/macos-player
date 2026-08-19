@@ -1,7 +1,7 @@
 import { basename } from 'path'
 import type { BaiduService } from './baidu'
 import type { LibraryService } from './library'
-import type { BaiduImportResult, SyncProgress } from '../shared/ipc'
+import type { BaiduImportResult, SyncProgress, SyncTrackDetail } from '../shared/ipc'
 
 const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.wav'])
 
@@ -24,7 +24,7 @@ export async function syncBaiduDirectory(
     return resyncBaiduDirectory(baidu, library, rootPath, emit)
   }
 
-  const syncToken = Date.now()
+  const syncToken = library.createSyncToken()
   const playlist = library.createPlaylist(playlistName.trim() || basename(normalizedRoot) || '百度网盘')
 
   library.markBaiduRootStale(normalizedRoot, syncToken)
@@ -33,6 +33,8 @@ export async function syncBaiduDirectory(
   let directoriesDone = 0
   let tracksUpserted = 0
   const importedTrackIds: string[] = []
+  const addedTracks: SyncTrackDetail[] = []
+  const updatedTracks: SyncTrackDetail[] = []
 
   emit({
     phase: 'scanning',
@@ -52,9 +54,24 @@ export async function syncBaiduDirectory(
         continue
       }
       if (!isAudioFile(entry.name)) continue
-      const trackId = library.upsertBaiduTrack(entry, syncToken)
-      importedTrackIds.push(trackId)
+      const outcome = library.upsertBaiduTrack(entry, syncToken)
+      importedTrackIds.push(outcome.trackId)
       tracksUpserted += 1
+      if (outcome.status === 'added') {
+        const row = library.getTrackRow(outcome.trackId)
+        if (row) addedTracks.push({ id: row.id, title: row.title, artist: row.artist, path: row.path })
+      } else if (outcome.status === 'updated') {
+        const row = library.getTrackRow(outcome.trackId)
+        if (row) {
+          updatedTracks.push({
+            id: row.id,
+            title: row.title,
+            artist: row.artist,
+            path: row.path,
+            previousPath: outcome.previousPath ?? undefined
+          })
+        }
+      }
     }
 
     if (directoriesDone % 5 === 0 || queue.length === 0) {
@@ -67,17 +84,20 @@ export async function syncBaiduDirectory(
     }
   }
 
-  const removed = library.finalizeBaiduRootSync(normalizedRoot, syncToken)
-  library.addTracksToPlaylist(playlist.id, [...new Set(importedTrackIds)])
+  const removedTracks = library.finalizeBaiduRootSync(normalizedRoot, syncToken)
+  library.replacePlaylistTracks(playlist.id, importedTrackIds)
   library.upsertLibraryRoot('baidu', normalizedRoot, playlist.id)
 
   const result: BaiduImportResult = {
     rootPath: normalizedRoot,
     playlistId: playlist.id,
     scanned: tracksUpserted,
-    added: tracksUpserted,
-    updated: 0,
-    removed
+    added: addedTracks.length,
+    updated: updatedTracks.length,
+    removed: removedTracks.length,
+    addedTracks,
+    updatedTracks,
+    removedTracks
   }
 
   emit({
@@ -85,7 +105,7 @@ export async function syncBaiduDirectory(
     currentPath: normalizedRoot,
     directoriesDone,
     tracksUpserted,
-    message: `已同步 ${tracksUpserted} 首，移除 ${removed} 首失效记录。`
+    message: `同步完成：新增 ${addedTracks.length} · 更新 ${updatedTracks.length} · 移除 ${removedTracks.length}`
   })
 
   return result
@@ -104,13 +124,15 @@ export async function resyncBaiduDirectory(
     throw new Error('该目录尚未导入，请先执行导入。')
   }
 
-  const syncToken = Date.now()
+  const syncToken = library.createSyncToken()
   library.markBaiduRootStale(normalizedRoot, syncToken)
 
   const queue: string[] = [normalizedRoot]
   let directoriesDone = 0
   let tracksUpserted = 0
   const seenTrackIds: string[] = []
+  const addedTracks: SyncTrackDetail[] = []
+  const updatedTracks: SyncTrackDetail[] = []
 
   emit({
     phase: 'scanning',
@@ -130,9 +152,24 @@ export async function resyncBaiduDirectory(
         continue
       }
       if (!isAudioFile(entry.name)) continue
-      const trackId = library.upsertBaiduTrack(entry, syncToken)
-      seenTrackIds.push(trackId)
+      const outcome = library.upsertBaiduTrack(entry, syncToken)
+      seenTrackIds.push(outcome.trackId)
       tracksUpserted += 1
+      if (outcome.status === 'added') {
+        const row = library.getTrackRow(outcome.trackId)
+        if (row) addedTracks.push({ id: row.id, title: row.title, artist: row.artist, path: row.path })
+      } else if (outcome.status === 'updated') {
+        const row = library.getTrackRow(outcome.trackId)
+        if (row) {
+          updatedTracks.push({
+            id: row.id,
+            title: row.title,
+            artist: row.artist,
+            path: row.path,
+            previousPath: outcome.previousPath ?? undefined
+          })
+        }
+      }
     }
 
     if (directoriesDone % 5 === 0 || queue.length === 0) {
@@ -145,8 +182,8 @@ export async function resyncBaiduDirectory(
     }
   }
 
-  const removed = library.finalizeBaiduRootSync(normalizedRoot, syncToken)
-  library.addTracksToPlaylist(root.playlist_id, [...new Set(seenTrackIds)])
+  const removedTracks = library.finalizeBaiduRootSync(normalizedRoot, syncToken)
+  library.replacePlaylistTracks(root.playlist_id, seenTrackIds)
   library.upsertLibraryRoot('baidu', normalizedRoot, root.playlist_id)
 
   emit({
@@ -154,15 +191,18 @@ export async function resyncBaiduDirectory(
     currentPath: normalizedRoot,
     directoriesDone,
     tracksUpserted,
-    message: `更新完成：${tracksUpserted} 首，移除 ${removed} 首失效记录。`
+    message: `更新完成：新增 ${addedTracks.length} · 更新 ${updatedTracks.length} · 移除 ${removedTracks.length}`
   })
 
   return {
     rootPath: normalizedRoot,
     playlistId: root.playlist_id,
     scanned: tracksUpserted,
-    added: 0,
-    updated: tracksUpserted,
-    removed
+    added: addedTracks.length,
+    updated: updatedTracks.length,
+    removed: removedTracks.length,
+    addedTracks,
+    updatedTracks,
+    removedTracks
   }
 }

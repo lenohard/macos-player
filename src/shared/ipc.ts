@@ -173,6 +173,15 @@ export interface LibraryRootInfo {
   lastSyncStatus: string | null
 }
 
+export interface SyncTrackDetail {
+  id: string
+  title: string
+  artist: string | null
+  path: string
+  /** 更新时若文件路径发生变化，记录旧路径。 */
+  previousPath?: string
+}
+
 export interface BaiduImportResult {
   rootPath: string
   playlistId: string
@@ -180,6 +189,9 @@ export interface BaiduImportResult {
   added: number
   updated: number
   removed: number
+  addedTracks: SyncTrackDetail[]
+  updatedTracks: SyncTrackDetail[]
+  removedTracks: SyncTrackDetail[]
 }
 
 export interface SyncProgress {

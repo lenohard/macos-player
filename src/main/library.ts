@@ -34,6 +34,19 @@ export interface LibraryRootRow {
   last_sync_status: string | null
 }
 
+export interface CloudUpsertResult {
+  trackId: string
+  status: 'added' | 'updated' | 'unchanged'
+  previousPath: string | null
+}
+
+export interface RemovedTrackInfo {
+  id: string
+  title: string
+  artist: string | null
+  path: string
+}
+
 export function trackPlaybackUrl(id: string): string {
   return `app-media://${id}/audio`
 }
@@ -66,7 +79,14 @@ export interface PlayHistoryEntry {
 }
 
 export class LibraryService {
+  private lastSyncToken = Date.now()
+
   constructor(private readonly db: LibraryDatabase) {}
+
+  createSyncToken(): number {
+    this.lastSyncToken = Math.max(Date.now(), this.lastSyncToken + 1)
+    return this.lastSyncToken
+  }
 
   getTrackRow(id: string): TrackRow | null {
     const row = this.db.prepare(`
@@ -99,8 +119,12 @@ export class LibraryService {
     search = ''
   ): TracksPage {
     const trimmed = search.trim()
-    const params: Array<string | number> = [sourceId]
-    let where = 'source_id = ? AND is_deleted = 0'
+    const params: Array<string | number> = []
+    let where = 'is_deleted = 0'
+    if (sourceId !== 'all') {
+      where = 'source_id = ? AND is_deleted = 0'
+      params.push(sourceId)
+    }
     if (trimmed) {
       where += ' AND title LIKE ? ESCAPE \'\\\''
       params.push(`%${trimmed.replace(/[%_\\]/g, char => `\\${char}`)}%`)
@@ -126,6 +150,23 @@ export class LibraryService {
       offset,
       limit
     }
+  }
+
+  listAllTracks(sourceId: string): Track[] {
+    const params: string[] = []
+    let where = 'is_deleted = 0'
+    if (sourceId !== 'all') {
+      where = 'source_id = ? AND is_deleted = 0'
+      params.push(sourceId)
+    }
+    const rows = this.db.prepare(`
+      SELECT id, source_id, remote_id, path, title, artist, duration_sec, size,
+             modified_at, md5, is_deleted
+      FROM tracks
+      WHERE ${where}
+      ORDER BY title COLLATE NOCASE ASC
+    `).all(...params) as unknown as TrackRow[]
+    return rows.map(rowToTrack)
   }
 
   upsertLocalTrack(filePath: string): Track {
@@ -156,38 +197,61 @@ export class LibraryService {
     return rowToTrack(row)
   }
 
-  upsertCloudTrack(sourceId: 'baidu' | 'quark', entry: CloudEntry, syncToken: number): string {
+  upsertCloudTrack(sourceId: 'baidu' | 'quark', entry: CloudEntry, syncToken: number): CloudUpsertResult {
     const now = Date.now()
     const remoteId = entry.id
     const title = basename(entry.name, extname(entry.name))
 
     const byRemote = this.db.prepare(`
-      SELECT id FROM tracks
+      SELECT id, path, title, size, modified_at, is_deleted
+      FROM tracks
       WHERE source_id = ? AND remote_id = ? LIMIT 1
-    `).get(sourceId, remoteId) as { id: string } | undefined
+    `).get(sourceId, remoteId) as
+      { id: string; path: string; title: string; size: number; modified_at: number; is_deleted: number } | undefined
 
     if (byRemote) {
+      const pathChanged = byRemote.path !== entry.path
+      const changed = pathChanged ||
+        byRemote.title !== title ||
+        byRemote.size !== entry.size ||
+        byRemote.modified_at !== entry.modifiedAt
       this.db.prepare(`
         UPDATE tracks SET
           path = ?, title = ?, size = ?, modified_at = ?,
           is_deleted = 0, last_seen_sync = ?, updated_at = ?
         WHERE id = ?
       `).run(entry.path, title, entry.size, entry.modifiedAt, syncToken, now, byRemote.id)
-      return byRemote.id
+      if (byRemote.is_deleted === 1) {
+        return { trackId: byRemote.id, status: 'added', previousPath: null }
+      }
+      return {
+        trackId: byRemote.id,
+        status: changed ? 'updated' : 'unchanged',
+        previousPath: pathChanged ? byRemote.path : null
+      }
     }
 
     const byPath = this.db.prepare(`
-      SELECT id FROM tracks WHERE source_id = ? AND path = ? LIMIT 1
-    `).get(sourceId, entry.path) as { id: string } | undefined
+      SELECT id, remote_id, title, size, modified_at, is_deleted
+      FROM tracks WHERE source_id = ? AND path = ? LIMIT 1
+    `).get(sourceId, entry.path) as
+      { id: string; remote_id: string | null; title: string; size: number; modified_at: number; is_deleted: number } | undefined
 
     if (byPath) {
+      const changed = byPath.remote_id !== remoteId ||
+        byPath.title !== title ||
+        byPath.size !== entry.size ||
+        byPath.modified_at !== entry.modifiedAt
       this.db.prepare(`
         UPDATE tracks SET
           remote_id = ?, title = ?, size = ?, modified_at = ?,
           is_deleted = 0, last_seen_sync = ?, updated_at = ?
         WHERE id = ?
       `).run(remoteId, title, entry.size, entry.modifiedAt, syncToken, now, byPath.id)
-      return byPath.id
+      if (byPath.is_deleted === 1) {
+        return { trackId: byPath.id, status: 'added', previousPath: null }
+      }
+      return { trackId: byPath.id, status: changed ? 'updated' : 'unchanged', previousPath: null }
     }
 
     const id = randomUUID()
@@ -197,19 +261,19 @@ export class LibraryService {
         modified_at, md5, is_deleted, last_seen_sync, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, 0, ?, ?, ?)
     `).run(id, sourceId, remoteId, entry.path, title, entry.size, entry.modifiedAt, syncToken, now, now)
-    return id
+    return { trackId: id, status: 'added', previousPath: null }
   }
 
-  upsertBaiduTrack(entry: CloudEntry, syncToken: number): string {
+  upsertBaiduTrack(entry: CloudEntry, syncToken: number): CloudUpsertResult {
     return this.upsertCloudTrack('baidu', entry, syncToken)
   }
 
   markCloudRootStale(sourceId: 'baidu' | 'quark', rootPath: string, syncToken: number): void {
-    const prefix = normalizeRootPrefix(rootPath)
+    const root = rootPathFilter(rootPath)
     this.db.prepare(`
       UPDATE tracks SET last_seen_sync = NULL
-      WHERE source_id = ? AND path LIKE ? ESCAPE '\\'
-    `).run(sourceId, `${escapeLike(prefix)}%`)
+      WHERE source_id = ? AND ${root.sql}
+    `).run(sourceId, ...root.params)
     void syncToken
   }
 
@@ -217,18 +281,27 @@ export class LibraryService {
     this.markCloudRootStale('baidu', rootPath, syncToken)
   }
 
-  finalizeCloudRootSync(sourceId: 'baidu' | 'quark', rootPath: string, syncToken: number): number {
-    const prefix = normalizeRootPrefix(rootPath)
-    const result = this.db.prepare(`
+  finalizeCloudRootSync(sourceId: 'baidu' | 'quark', rootPath: string, syncToken: number): RemovedTrackInfo[] {
+    const root = rootPathFilter(rootPath)
+    const removed = this.db.prepare(`
+      SELECT id, title, artist, path
+      FROM tracks
+      WHERE source_id = ?
+        AND is_deleted = 0
+        AND ${root.sql}
+        AND (last_seen_sync IS NULL OR last_seen_sync != ?)
+    `).all(sourceId, ...root.params, syncToken) as unknown as RemovedTrackInfo[]
+
+    this.db.prepare(`
       UPDATE tracks SET is_deleted = 1, updated_at = ?
       WHERE source_id = ?
-        AND path LIKE ? ESCAPE '\\'
+        AND ${root.sql}
         AND (last_seen_sync IS NULL OR last_seen_sync != ?)
-    `).run(Date.now(), sourceId, `${escapeLike(prefix)}%`, syncToken)
-    return Number(result.changes)
+    `).run(Date.now(), sourceId, ...root.params, syncToken)
+    return removed
   }
 
-  finalizeBaiduRootSync(rootPath: string, syncToken: number): number {
+  finalizeBaiduRootSync(rootPath: string, syncToken: number): RemovedTrackInfo[] {
     return this.finalizeCloudRootSync('baidu', rootPath, syncToken)
   }
 
@@ -263,12 +336,12 @@ export class LibraryService {
   }
 
   trackIdsUnderBaiduRoot(rootPath: string): string[] {
-    const prefix = normalizeRootPrefix(rootPath)
+    const root = rootPathFilter(rootPath)
     const rows = this.db.prepare(`
       SELECT id FROM tracks
-      WHERE source_id = 'baidu' AND is_deleted = 0 AND path LIKE ? ESCAPE '\\'
+      WHERE source_id = 'baidu' AND is_deleted = 0 AND ${root.sql}
       ORDER BY title COLLATE NOCASE ASC
-    `).all(`${escapeLike(prefix)}%`) as Array<{ id: string }>
+    `).all(...root.params) as Array<{ id: string }>
     return rows.map(row => row.id)
   }
 
@@ -442,6 +515,23 @@ export class LibraryService {
     })
   }
 
+  replacePlaylistTracks(playlistId: string, trackIds: string[]): void {
+    const uniqueTrackIds = [...new Set(trackIds)]
+    const insert = this.db.prepare(`
+      INSERT INTO playlist_tracks (playlist_id, track_id, position, added_at)
+      VALUES (?, ?, ?, ?)
+    `)
+    const now = Date.now()
+
+    runInTransaction(this.db, () => {
+      this.db.prepare('DELETE FROM playlist_tracks WHERE playlist_id = ?').run(playlistId)
+      uniqueTrackIds.forEach((trackId, position) => {
+        if (this.getTrackRow(trackId)) insert.run(playlistId, trackId, position, now)
+      })
+      this.db.prepare('UPDATE playlists SET updated_at = ? WHERE id = ?').run(now, playlistId)
+    })
+  }
+
   removeTrackFromPlaylist(playlistId: string, trackId: string): void {
     const now = Date.now()
     this.db.prepare(`
@@ -522,4 +612,13 @@ function normalizeRootPrefix(rootPath: string): string {
 
 function escapeLike(value: string): string {
   return value.replace(/[%_\\]/g, char => `\\${char}`)
+}
+
+function rootPathFilter(rootPath: string): { sql: string; params: string[] } {
+  const root = normalizeRootPrefix(rootPath)
+  if (root === '/') return { sql: "path LIKE '/%'", params: [] }
+  return {
+    sql: "(path = ? OR path LIKE ? ESCAPE '\\')",
+    params: [root, `${escapeLike(root)}/%`]
+  }
 }

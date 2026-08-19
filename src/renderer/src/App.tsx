@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BaiduAuthStatus,
+  BaiduImportResult,
   CloudEntry,
   CloudSourceId,
   LibraryRootInfo,
@@ -18,6 +19,7 @@ import type {
 import PlayerBar from './PlayerBar'
 import SearchField from './SearchField'
 import SettingsPanel from './SettingsPanel'
+import SyncResultPanel from './SyncResultPanel'
 import { trackSourceLabel } from './sourceLabels'
 import TrackDetail from './TrackDetail'
 
@@ -135,7 +137,7 @@ export default function App() {
   const [queueHydrated, setQueueHydrated] = useState(false)
   const queuePersistenceReady = useRef(false)
   const librarySearchRef = useRef('')
-  const cloudSourceRef = useRef<'baidu' | 'quark'>('baidu')
+  const cloudSourceRef = useRef<'baidu' | 'quark' | 'all'>('baidu')
   const libraryRequestSeq = useRef(0)
   const playlistRequestSeq = useRef(0)
   const baiduDirSeq = useRef(0)
@@ -149,6 +151,8 @@ export default function App() {
   const [baiduRoots, setBaiduRoots] = useState<LibraryRootInfo[]>([])
   const [isBaiduBusy, setIsBaiduBusy] = useState(false)
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null)
+  const [lastSyncResult, setLastSyncResult] = useState<BaiduImportResult | null>(null)
+  const [allTracksTotal, setAllTracksTotal] = useState(0)
   const [playlists, setPlaylists] = useState<PlaylistSummary[]>([])
   const [newPlaylistName, setNewPlaylistName] = useState('')
   const [importPlaylistName, setImportPlaylistName] = useState('')
@@ -208,6 +212,15 @@ export default function App() {
     }
   }, [])
 
+  const refreshAllTracksTotal = useCallback(async (): Promise<void> => {
+    try {
+      const page = await window.api.listTracksPage('all', 0, 0)
+      setAllTracksTotal(page.total)
+    } catch {
+      setAllTracksTotal(0)
+    }
+  }, [])
+
   const loadLibraryPage = useCallback(async (sourceId: string, offset = 0, search?: string): Promise<void> => {
     const seq = ++libraryRequestSeq.current
     const query = (search ?? librarySearchRef.current).trim()
@@ -232,7 +245,8 @@ export default function App() {
 
   useEffect(() => {
     if (mainView.kind !== 'source') return
-    const next: 'baidu' | 'quark' = mainView.sourceId === 'quark' ? 'quark' : 'baidu'
+    const next: 'baidu' | 'quark' | 'all' =
+      mainView.sourceId === 'quark' ? 'quark' : mainView.sourceId === 'all' ? 'all' : 'baidu'
     if (next !== cloudSourceRef.current) {
       cloudSourceRef.current = next
       setLibraryOffset(0)
@@ -271,6 +285,24 @@ export default function App() {
     replaceQueueAndPlay(pickRandomTracks(favoriteTracks, 20))
   }
 
+  async function playAllFromLibrary(): Promise<void> {
+    try {
+      const all = await window.api.listTracks('all')
+      if (all.length > 0) replaceQueueAndPlay(all)
+    } catch (reason) {
+      setError(messageFrom(reason, '无法载入全部音乐'))
+    }
+  }
+
+  async function playRandomTwentyFromLibrary(): Promise<void> {
+    try {
+      const all = await window.api.listTracks('all')
+      if (all.length > 0) replaceQueueAndPlay(pickRandomTracks(all, 20))
+    } catch (reason) {
+      setError(messageFrom(reason, '无法载入全部音乐'))
+    }
+  }
+
   async function removeFavorite(trackId: string): Promise<void> {
     try {
       await window.api.favoritesRemove(trackId)
@@ -299,6 +331,7 @@ export default function App() {
     window.api.getSources().then(setSources).catch(() => setError('无法载入音乐来源'))
     void refreshPlaylists()
     void refreshFavorites()
+    void refreshAllTracksTotal()
     window.api.baiduGetStatus()
       .then(status => {
         setBaiduStatus(status)
@@ -323,7 +356,7 @@ export default function App() {
 
     const unsubscribe = window.api.onSyncProgress(progress => setSyncProgress(progress))
     return unsubscribe
-  }, [loadLibraryPage, refreshPlaylists, refreshFavorites])
+  }, [loadLibraryPage, refreshPlaylists, refreshFavorites, refreshAllTracksTotal])
 
   useEffect(() => {
     void window.api.updateGetStatus().then(setUpdateSnapshot).catch(() => {})
@@ -619,6 +652,7 @@ export default function App() {
       const selected = await window.api.openLocalTracks()
       setLocalTracks(selected)
       if (selected.length > 0) replaceQueueAndPlay(selected)
+      void refreshAllTracksTotal()
     } catch (reason) {
       setError(messageFrom(reason, '无法打开所选音乐，请重试'))
     } finally {
@@ -682,10 +716,13 @@ export default function App() {
     setIsBaiduBusy(true)
     setError(null)
     setSyncProgress(null)
+    setLastSyncResult(null)
     try {
       const result = await window.api.baiduImportDirectory(baiduPath, importPlaylistName)
+      setLastSyncResult(result)
       setBaiduRoots(await window.api.baiduListRoots())
       await refreshPlaylists()
+      void refreshAllTracksTotal()
       await loadLibraryPage('baidu', 0)
       setMainView({ kind: 'playlist', playlistId: result.playlistId })
     } catch (reason) {
@@ -700,10 +737,13 @@ export default function App() {
     setIsBaiduBusy(true)
     setError(null)
     setSyncProgress(null)
+    setLastSyncResult(null)
     try {
-      await window.api.baiduResyncDirectory(rootPath)
+      const result = await window.api.baiduResyncDirectory(rootPath)
+      setLastSyncResult(result)
       setBaiduRoots(await window.api.baiduListRoots())
       await refreshPlaylists()
+      void refreshAllTracksTotal()
       await loadLibraryPage('baidu', 0)
       if (activePlaylistId) await refreshPlaylistTracks(activePlaylistId)
     } catch (reason) {
@@ -818,10 +858,13 @@ export default function App() {
     setIsWebdavBusy(true)
     setError(null)
     setSyncProgress(null)
+    setLastSyncResult(null)
     try {
       const result = await window.api.webdavImportDirectory(webdavPath, webdavImportName)
+      setLastSyncResult(result)
       setWebdavRoots(await window.api.webdavListRoots())
       await refreshPlaylists()
+      void refreshAllTracksTotal()
       await loadLibraryPage('quark', 0)
       setMainView({ kind: 'playlist', playlistId: result.playlistId })
     } catch (reason) {
@@ -836,10 +879,13 @@ export default function App() {
     setIsWebdavBusy(true)
     setError(null)
     setSyncProgress(null)
+    setLastSyncResult(null)
     try {
-      await window.api.webdavResyncDirectory(rootPath)
+      const result = await window.api.webdavResyncDirectory(rootPath)
+      setLastSyncResult(result)
       setWebdavRoots(await window.api.webdavListRoots())
       await refreshPlaylists()
+      void refreshAllTracksTotal()
       await loadLibraryPage('quark', 0)
       if (activePlaylistId) await refreshPlaylistTracks(activePlaylistId)
     } catch (reason) {
@@ -905,6 +951,7 @@ export default function App() {
   const isLocal = mainView.kind === 'source' && activeSourceId === 'local'
   const isBaidu = mainView.kind === 'source' && activeSourceId === 'baidu'
   const isQuark = mainView.kind === 'source' && activeSourceId === 'quark'
+  const isAll = mainView.kind === 'source' && activeSourceId === 'all'
   const isPlaylistView = mainView.kind === 'playlist'
   const isFavoritesView = mainView.kind === 'favorites'
   const currentTrack = temporaryTrack ?? tracks[currentIndex]
@@ -937,6 +984,14 @@ export default function App() {
 
         <p className="sidebar-label">音乐来源</p>
         <nav className="source-nav" aria-label="音乐来源">
+          <button
+            className={`source-button ${isAll ? 'active' : ''}`}
+            onClick={() => setMainView({ kind: 'source', sourceId: 'all' })}
+          >
+            <span className="source-icon source-local" aria-hidden="true">☰</span>
+            <span>所有</span>
+            <span className="source-status">{allTracksTotal}</span>
+          </button>
           {sources.map(source => {
             const status = sourceStatus(source)
             return (
@@ -1050,7 +1105,9 @@ export default function App() {
                       ? activePlaylist?.name ?? '歌单'
                       : mainView.kind === 'trackDetail'
                         ? detailTrack?.title ?? '曲目'
-                        : activeSource?.name ?? '音乐'}
+                        : isAll
+                          ? '所有音乐'
+                          : activeSource?.name ?? '音乐'}
             </h1>
           </div>
           {isLocal && (
@@ -1080,6 +1137,9 @@ export default function App() {
               ? `正在扫描 ${syncProgress.currentPath} · 已处理 ${syncProgress.tracksUpserted} 首`
               : syncProgress.message ?? '同步完成'}
           </div>
+        )}
+        {lastSyncResult && (
+          <SyncResultPanel result={lastSyncResult} onClose={() => setLastSyncResult(null)} />
         )}
 
         <section className="library-content">
@@ -1321,6 +1381,85 @@ export default function App() {
             </div>
           )}
 
+          {isAll && (
+            <div className="library-panel playlist-panel">
+              <div className="panel-header-row playlist-panel-header">
+                <p className="panel-title">全部音乐（{libraryTotal} 首）</p>
+                <div className="playlist-actions">
+                  <button
+                    className="primary-button"
+                    onClick={() => void playAllFromLibrary()}
+                    disabled={libraryTotal === 0}
+                  >
+                    全部播放
+                  </button>
+                  <button
+                    className="quiet-button"
+                    onClick={() => void playRandomTwentyFromLibrary()}
+                    disabled={libraryTotal === 0}
+                  >
+                    随机选择20首
+                  </button>
+                  <SearchField
+                    value={librarySearch}
+                    onChange={setLibrarySearch}
+                    placeholder="搜索标题…"
+                    aria-label="搜索全部音乐"
+                    debounceMs={350}
+                    onDebouncedChange={runLibrarySearch}
+                  />
+                  <div className="pager">
+                    <button
+                      className="quiet-button"
+                      disabled={libraryOffset <= 0}
+                      onClick={() => void loadLibraryPage('all', Math.max(0, libraryOffset - PAGE_SIZE))}
+                    >
+                      上一页
+                    </button>
+                    <span>
+                      {libraryTotal === 0
+                        ? '0 首'
+                        : `${libraryOffset + 1}-${Math.min(libraryOffset + PAGE_SIZE, libraryTotal)}`}
+                    </span>
+                    <button
+                      className="quiet-button"
+                      disabled={libraryOffset + PAGE_SIZE >= libraryTotal}
+                      onClick={() => void loadLibraryPage('all', libraryOffset + PAGE_SIZE)}
+                    >
+                      下一页
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="track-table" role="table" aria-label="全部音乐">
+                <div className="track-table-header" role="row">
+                  <span>#</span><span>标题</span><span>来源</span>
+                </div>
+                {libraryTracks.map((track, index) => (
+                  <button
+                    key={track.id}
+                    className={`track-row ${track.id === currentTrackId ? 'selected' : ''}`}
+                    onClick={() => playLibraryTrack(index)}
+                    onContextMenu={event => {
+                      event.preventDefault()
+                      void showTrackContextMenu(track)
+                    }}
+                    aria-label={`${track.title}，${trackSourceLabel(track.sourceId)}`}
+                    role="row"
+                  >
+                    <span className="track-number">{track.id === currentTrackId ? '▶' : libraryOffset + index + 1}</span>
+                    <span className="track-name-cell">
+                      <span className="track-name">{track.title}</span>
+                      <span className="track-artist">{track.artist ?? trackSourceLabel(track.sourceId)}</span>
+                    </span>
+                    <span className="track-source">{trackSourceLabel(track.sourceId)}</span>
+                  </button>
+                ))}
+                {libraryTracks.length === 0 && <div className="directory-empty">没有匹配的曲目。</div>}
+              </div>
+            </div>
+          )}
+
           {isLocal && localTracks.length > 0 && (
             <div className="track-table" role="table" aria-label="本地音乐">
               <div className="track-table-header" role="row">
@@ -1363,7 +1502,7 @@ export default function App() {
           {isBaidu && !baiduStatus?.connected && (
             <div className="empty-state">
               <div className="empty-art" aria-hidden="true"><span>B</span></div>
-              <h2>{baiduStatus?.configured === false ? '需要配置百度 OAuth' : '连接百度网盘'}</h2>
+              <h2>连接百度网盘</h2>
               <p>
                 {baiduStatus?.configured === false
                   ? '请先配置 Client ID、Client Secret 和回调地址。'

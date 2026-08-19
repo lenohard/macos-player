@@ -290,6 +290,117 @@ input:focus-visible {
   border-radius: 8px;
 }
 
+.sync-result-panel {
+  margin: 0 30px 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.04);
+}
+
+.sync-result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sync-result-header .panel-title {
+  margin: 0;
+}
+
+.sync-result-header .quiet-button {
+  min-height: 26px;
+  padding: 0 9px;
+}
+
+.sync-result-sections {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 9px;
+}
+
+.sync-result-section {
+  min-width: 0;
+  padding: 8px;
+  background: color-mix(in srgb, var(--surface-solid) 70%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.sync-result-label,
+.sync-result-empty,
+.sync-result-more {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sync-result-label {
+  margin-bottom: 6px;
+  font-weight: 650;
+}
+
+.sync-result-added .sync-result-label { color: #218653; }
+.sync-result-updated .sync-result-label { color: var(--accent); }
+.sync-result-removed .sync-result-label { color: #b3261e; }
+
+.sync-result-empty {
+  padding-top: 8px;
+}
+
+.sync-result-list {
+  max-height: 150px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.sync-result-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  padding: 5px 0;
+  border-top: 1px solid var(--border);
+}
+
+.sync-result-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-result-row .track-name {
+  font-size: 11px;
+}
+
+.sync-result-row .track-artist {
+  max-width: 100px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.sync-result-row .track-source,
+.sync-result-previous {
+  grid-column: 1 / -1;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.sync-result-more {
+  margin-top: 6px;
+}
+
+@media (max-width: 900px) {
+  .sync-result-sections {
+    grid-template-columns: 1fr;
+  }
+}
+
 .import-panel,
 .roots-panel,
 .library-panel {
