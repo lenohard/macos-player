@@ -189,6 +189,11 @@ Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by
 ### Agent / workflow pitfalls
 
 - 多个 pi/Cursor 会话 **共用同一 repo cwd** 时，主任务 commit 后 **陈旧 subagent 仍可能改工作树** 或留下未跟踪文件；大改后尽快 typecheck + commit，或 subagent 用 **git worktree**。
+- **发布版本必须在任何 dist 之前锁定**：先同步 `package.json`、`package-lock.json` 的版本并检查 package root 版本，再运行 `typecheck`/`build`/`dist`；不要在 electron-builder 运行期间修改版本。提交和 tag 后缀必须与版本一致。
+- 推荐发布顺序：完成代码 → 更新并校验版本 → `typecheck`/`build` → commit → 创建 tag → 本地 dist 仅作 sanity check → push tag 交给 CI 正式签名、公证和发布。不要把本地“已签名但未公证”的产物手动上传为正式 Release。
+- Tag workflow 成功不代表 Release 已正式可见：发布后检查 `isDraft`/`isPrerelease`，并核对每个平台的安装包、`latest*.yml`、版本、文件名、size 和 sha512；electron-builder 若留下 draft，需要显式设为非 draft。
+- electron-builder 若在 macOS 报 `Electron.app/Contents/MacOS/Electron` 缺失，先用 `unzip -t` 验证对应 `~/Library/Caches/electron/electron-*.zip`；若归档损坏，只删除该缓存和本次不完整的 `dist/<arch>` 后重试一次，勿无限重试或把未完成 app 的 codesign 失败误判为证书问题。
+- GitHub Actions 当前会提示 `actions/checkout@v4`/`setup-node@v4` 被强制使用 Node.js 24；不影响本次发布，但后续应升级 action 版本或 workflow 运行时以消除弃用警告。
 - 本机 **`GH_TOKEN` 环境变量会遮蔽 gh/keyring**；`gh` / `git push` 用 `env -u GH_TOKEN …`（见全局 agent memory）。
 - Vite 主配置文件名必须是 **`electron.vite.config.js`**（不是连字符变体），否则 main 外链/环境注入不生效。
 - 验证习惯：`npm run typecheck` → `npm run build` → 打包改动时加 `npm run dist`；IPC 改动顺序：**`src/shared/ipc.ts` → main → preload → renderer**。
