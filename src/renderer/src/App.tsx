@@ -134,6 +134,7 @@ export default function App() {
   const [playOrder, setPlayOrder] = useState<number[]>([])
   const [temporaryTrack, setTemporaryTrack] = useState<Track | null>(null)
   const [detailTrack, setDetailTrack] = useState<Track | null>(null)
+  const [playbackRequest, setPlaybackRequest] = useState(0)
   const [queueHydrated, setQueueHydrated] = useState(false)
   const queuePersistenceReady = useRef(false)
   const librarySearchRef = useRef('')
@@ -503,6 +504,7 @@ export default function App() {
   }, [mainView.kind, refreshFavorites])
 
   function replaceQueueAndPlay(queue: Track[]): void {
+    requestPlayback()
     setTemporaryTrack(null)
     setTracks(queue)
     setShuffle(false)
@@ -512,12 +514,14 @@ export default function App() {
 
   function playQueueIndex(index: number): void {
     if (index < 0 || index >= tracks.length) return
+    requestPlayback()
     setTemporaryTrack(null)
     setCurrentIndex(index)
     if (shuffle) setPlayOrder(shuffleOrder(tracks.length, index))
   }
 
   function playTemporary(track: Track): void {
+    requestPlayback()
     setTemporaryTrack(track)
   }
 
@@ -601,16 +605,24 @@ export default function App() {
     }))
   }
 
+  function requestPlayback(): void {
+    setPlaybackRequest(request => request + 1)
+  }
+
   function playNext(): void {
     if (temporaryTrack) setTemporaryTrack(null)
     if (tracks.length === 0 || currentIndex < 0) return
     const order = shuffle ? playOrder : Array.from({ length: tracks.length }, (_, index) => index)
     const position = order.indexOf(currentIndex)
     if (position >= 0 && position < order.length - 1) {
+      requestPlayback()
       setCurrentIndex(order[position + 1])
       return
     }
-    if (repeatMode === 'all' && order.length > 0) setCurrentIndex(order[0])
+    if (repeatMode === 'all' && order.length > 0) {
+      requestPlayback()
+      setCurrentIndex(order[0])
+    }
   }
 
   function playPrevious(): void {
@@ -618,7 +630,10 @@ export default function App() {
     if (tracks.length === 0 || currentIndex < 0) return
     const order = shuffle ? playOrder : Array.from({ length: tracks.length }, (_, index) => index)
     const position = order.indexOf(currentIndex)
-    if (position > 0) setCurrentIndex(order[position - 1])
+    if (position > 0) {
+      requestPlayback()
+      setCurrentIndex(order[position - 1])
+    }
   }
 
   function handleShuffleChange(enabled: boolean): void {
@@ -633,6 +648,7 @@ export default function App() {
 
   function handleTemporaryEnded(): void {
     setTemporaryTrack(null)
+    requestPlayback()
   }
 
   function cycleRepeatMode(): void {
@@ -1108,6 +1124,7 @@ export default function App() {
       </aside>
 
       <main className="main-content">
+        <div className="window-drag-region main-window-drag-region" />
         <header className="content-header">
           <div>
             <p className="eyebrow">
@@ -1899,6 +1916,7 @@ export default function App() {
         tracks={tracks}
         currentIndex={currentIndex}
         currentTrack={currentTrack}
+        playbackRequest={playbackRequest}
         temporaryTrack={temporaryTrack !== null}
         shuffle={shuffle}
         repeatMode={repeatMode}

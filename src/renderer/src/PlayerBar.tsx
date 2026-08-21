@@ -5,6 +5,7 @@ interface PlayerBarProps {
   tracks: Track[]
   currentIndex: number
   currentTrack?: Track
+  playbackRequest: number
   temporaryTrack: boolean
   shuffle: boolean
   repeatMode: 'off' | 'all' | 'one'
@@ -49,6 +50,7 @@ export default function PlayerBar({
   tracks,
   currentIndex,
   currentTrack,
+  playbackRequest,
   temporaryTrack,
   shuffle,
   repeatMode,
@@ -96,8 +98,10 @@ export default function PlayerBar({
     setDuration(0)
     audio.src = currentTrack.playbackUrl
     audio.load()
-    void audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false))
-  }, [currentTrack])
+    if (playbackRequest > 0) {
+      void audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false))
+    }
+  }, [currentTrack, playbackRequest])
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume
