@@ -47,6 +47,37 @@ export interface RemovedTrackInfo {
   path: string
 }
 
+export interface SongLyricsLine {
+  original: string
+  translated: string
+}
+
+export interface SongMeta {
+  id: string
+  path: string
+  title: string
+  intro: string
+  lyrics: string | SongLyricsLine[]
+  lyricsBilingual: SongLyricsLine[]
+  source: string
+  model: string
+  found: boolean
+  reason?: string
+  updatedAt: number
+}
+
+export interface SongMetaInput {
+  path: string
+  title: string
+  intro: string
+  lyrics: string
+  lyricsBilingual: SongLyricsLine[]
+  source: string
+  model: string
+  found: boolean
+  reason?: string
+}
+
 export function trackPlaybackUrl(id: string): string {
   return `app-media://${id}/audio`
 }
@@ -76,6 +107,49 @@ export function rowToTrackDetail(row: TrackRow): TrackDetail {
 export interface PlayHistoryEntry {
   track: Track
   playedAt: number
+}
+
+interface SongMetaDbRow {
+  id: string
+  path: string
+  title: string
+  intro: string
+  lyrics: string
+  lyrics_bilingual: string
+  source: string
+  model: string
+  found: number
+  reason: string | null
+  updated_at: number
+}
+
+function songMetaFromRow(row: SongMetaDbRow): SongMeta {
+  let lyricsBilingual: SongLyricsLine[] = []
+  try {
+    const parsed: unknown = JSON.parse(row.lyrics_bilingual)
+    if (Array.isArray(parsed)) {
+      lyricsBilingual = parsed.filter((line): line is SongLyricsLine =>
+        !!line && typeof line === 'object' &&
+        typeof (line as SongLyricsLine).original === 'string' &&
+        typeof (line as SongLyricsLine).translated === 'string'
+      )
+    }
+  } catch {
+    // 损坏的歌词双语数据不影响回查其它字段
+  }
+  return {
+    id: row.id,
+    path: row.path,
+    title: row.title,
+    intro: row.intro,
+    lyrics: lyricsBilingual.length > 0 ? lyricsBilingual : row.lyrics,
+    lyricsBilingual,
+    source: row.source,
+    model: row.model,
+    found: row.found === 1,
+    ...(row.reason ? { reason: row.reason } : {}),
+    updatedAt: row.updated_at
+  }
 }
 
 export class LibraryService {
@@ -622,6 +696,61 @@ export class LibraryService {
       LIMIT ?
     `).all(capped) as unknown as Array<TrackRow & { played_at: number }>
     return rows.map(row => ({ track: rowToTrack(row), playedAt: row.played_at }))
+  }
+
+  upsertSongMeta(input: SongMetaInput): SongMeta {
+    const path = input.path.trim() || input.title.trim()
+    const title = input.title.trim() || path
+    if (!path || !title) throw new Error('歌曲路径或标题不能为空。')
+    const now = Date.now()
+    const id = randomUUID()
+    const lyricsBilingual = JSON.stringify(input.lyricsBilingual)
+    this.db.prepare(`
+      INSERT INTO song_meta (
+        id, path, title, intro, lyrics, lyrics_bilingual, source, model, found, reason, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(path) DO UPDATE SET
+        title = excluded.title,
+        intro = excluded.intro,
+        lyrics = excluded.lyrics,
+        lyrics_bilingual = excluded.lyrics_bilingual,
+        source = excluded.source,
+        model = excluded.model,
+        found = excluded.found,
+        reason = excluded.reason,
+        updated_at = excluded.updated_at
+    `).run(
+      id,
+      path,
+      title,
+      input.intro,
+      input.lyrics,
+      lyricsBilingual,
+      input.source,
+      input.model,
+      input.found ? 1 : 0,
+      input.reason ?? null,
+      now
+    )
+    const row = this.db.prepare(`
+      SELECT id, path, title, intro, lyrics, lyrics_bilingual, source, model, found, reason, updated_at
+      FROM song_meta WHERE path = ? LIMIT 1
+    `).get(path) as SongMetaDbRow | undefined
+    if (!row) throw new Error('无法保存歌曲信息。')
+    return songMetaFromRow(row)
+  }
+
+  getSongMeta(identifier: string): SongMeta | null {
+    const value = identifier.trim()
+    if (!value) return null
+    const row = this.db.prepare(`
+      SELECT id, path, title, intro, lyrics, lyrics_bilingual, source, model, found, reason, updated_at
+      FROM song_meta
+      WHERE id = ? OR path = ? OR title = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get(value, value, value) as SongMetaDbRow | undefined
+    return row ? songMetaFromRow(row) : null
   }
 }
 

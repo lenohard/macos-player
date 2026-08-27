@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { app } from 'electron'
 import { join } from 'path'
 
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 4
 
 const MIGRATION_V1 = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -99,6 +99,25 @@ CREATE INDEX IF NOT EXISTS idx_play_history_played
   ON play_history(played_at DESC);
 `
 
+const MIGRATION_V4 = `
+CREATE TABLE IF NOT EXISTS song_meta (
+  id TEXT PRIMARY KEY,
+  path TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  intro TEXT NOT NULL DEFAULT '',
+  lyrics TEXT NOT NULL DEFAULT '',
+  lyrics_bilingual TEXT NOT NULL DEFAULT '[]',
+  source TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  found INTEGER NOT NULL DEFAULT 0,
+  reason TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_song_meta_title
+  ON song_meta(title COLLATE NOCASE);
+`
+
 function migrate(db: DatabaseSync): void {
   const hasMeta = db.prepare(`
     SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'
@@ -127,6 +146,9 @@ function migrate(db: DatabaseSync): void {
     }
     if (currentVersion < 3) {
       db.exec(MIGRATION_V3)
+    }
+    if (currentVersion < 4) {
+      db.exec(MIGRATION_V4)
     }
     db.prepare('UPDATE schema_meta SET version = ?').run(SCHEMA_VERSION)
     db.exec('COMMIT')

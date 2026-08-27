@@ -39,6 +39,7 @@ import { fetchWithElectronNet, isAsciiHeaderValue } from './media-net'
 import { WebDAVService } from './webdav'
 import { syncWebDAVDirectory, resyncWebDAVDirectory } from './webdav-sync'
 import { startCliServer, stopCliServer, setPlaybackState, ackRemoteCommand } from './cli-server'
+import { SongInfoService } from './song-info'
 
 const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.wav'])
 
@@ -416,7 +417,8 @@ app.whenReady().then(() => {
         return resyncWebDAVDirectory(webdavService, lib, normalized, emitSyncProgress)
       }
       throw new Error('该目录尚未导入，请先执行导入。')
-    }
+    },
+    new SongInfoService(getLibrary())
   )
   installApplicationMenu()
 
