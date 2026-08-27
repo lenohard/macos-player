@@ -28,6 +28,8 @@
  *   corner favorite <trackId>                  add to favorites
  *   corner unfavorite <trackId>                remove from favorites
  *   corner history [limit]                     show recently played tracks
+ *   corner song-info --prompt "<song and path>" [--model <model>]  query song info
+ *   corner song-info --get <id|path|title>      read saved song info
  *   corner events                              stream playback events (SSE)
  *
  * JSON output: add --json to any command.
@@ -126,6 +128,28 @@ function formatTime(seconds) {
 
 function formatHuman(data) {
   if (!data) return ''
+
+  // song metadata
+  if (typeof data.intro === 'string' && data.lyrics !== undefined && data.found !== undefined) {
+    const lines = []
+    if (data.title) lines.push(`${data.title}${data.source ? ` [${data.source}]` : ''}`)
+    if (data.path) lines.push(`path: ${data.path}`)
+    lines.push('', '—— 介绍 ——', data.intro || (data.found ? '暂无介绍。' : `未找到：${data.reason || '未知原因'}`))
+    lines.push('', '—— 歌词 ——')
+    const lyrics = Array.isArray(data.lyricsBilingual) && data.lyricsBilingual.length > 0
+      ? data.lyricsBilingual
+      : data.lyrics
+    if (Array.isArray(lyrics)) {
+      if (lyrics.length === 0) lines.push(data.found ? '暂无歌词。' : '未找到歌词。')
+      for (const line of lyrics) {
+        if (line.original) lines.push(line.original)
+        if (line.translated) lines.push(line.translated)
+      }
+    } else {
+      lines.push(data.lyrics || (data.found ? '暂无歌词。' : '未找到歌词。'))
+    }
+    return lines.join('\\n')
+  }
 
   // playlist list
   if (Array.isArray(data) && data[0]?.name !== undefined && data[0]?.trackCount !== undefined) {
@@ -228,6 +252,8 @@ Usage:
   corner favorite <trackId>               add to favorites
   corner unfavorite <trackId>             remove from favorites
   corner history [limit]                  show recently played tracks
+  corner song-info --prompt <text>        query and save song intro/lyrics
+  corner song-info --get <id|path|title>  read saved song metadata
   corner events                           stream playback events (SSE)
 
 Add --json or -j to any command for JSON output.`
@@ -422,6 +448,30 @@ async function main() {
         const limit = flags[0] ? `?limit=${encodeURIComponent(flags[0])}` : ''
         const data = await request(`/history${limit}`)
         print(data, useJson)
+        break
+      }
+      case 'song-info':
+      case 'song': {
+        if (args.includes('--help') || args.includes('-h')) {
+          console.log('Usage: corner song-info --prompt "<song and path>" [--model <model>] [--json] | --get <id|path|title> [--json]')
+          break
+        }
+        const promptIdx = args.indexOf('--prompt')
+        const modelIdx = args.indexOf('--model')
+        const getIdx = args.indexOf('--get')
+        if (getIdx >= 0 && getIdx + 1 < args.length) {
+          const identifier = args[getIdx + 1]
+          const data = await request(`/api/music/song-info?path=${encodeURIComponent(identifier)}`)
+          print(data, useJson)
+        } else if (promptIdx >= 0 && promptIdx + 1 < args.length) {
+          const prompt = args[promptIdx + 1]
+          const modelId = modelIdx >= 0 && modelIdx + 1 < args.length ? args[modelIdx + 1] : undefined
+          const data = await request('/api/music/song-info', 'POST', { prompt, model: modelId })
+          print(data, useJson)
+        } else {
+          console.error('Usage: corner song-info --prompt "<song and path>" [--model qwen/qwen3.7-plus] | --get <id|path|title>')
+          process.exit(1)
+        }
         break
       }
       case 'events': {

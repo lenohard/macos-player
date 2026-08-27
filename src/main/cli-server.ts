@@ -12,6 +12,7 @@ import {
 } from '../shared/ipc'
 import type { LibraryService } from './library'
 import type { LibrarySource } from '../shared/ipc'
+import type { SongInfoService } from './song-info'
 
 const SOURCES: LibrarySource[] = [
   { id: 'local', name: '本地音乐', type: 'local' },
@@ -23,6 +24,7 @@ const COMMAND_ACK_TIMEOUT_MS = 3000
 
 interface CliServerContext {
   library: LibraryService
+  songInfo: SongInfoService
   getMainWindow: () => BrowserWindow | null
   resyncLibrary: (rootPath: string) => Promise<BaiduImportResult>
 }
@@ -533,6 +535,33 @@ async function handleRequest(
       return jsonReply(res, 200, { entries: ctx.library.listPlayHistory(limit) })
     }
 
+    // POST /api/music/song-info (and /song-info) — query the model and persist the result.
+    // The public contract uses `model`; `modelId` remains accepted for the CLI's old spelling.
+    if (method === 'POST' && (path === '/api/music/song-info' || path === '/song-info')) {
+      const body = (await readJsonBody(req)) as Record<string, unknown> | null
+      const prompt = typeof body?.prompt === 'string' ? body.prompt : ''
+      const model = typeof body?.model === 'string'
+        ? body.model
+        : typeof body?.modelId === 'string' ? body.modelId : undefined
+      const overrides = {
+        path: typeof body?.path === 'string' ? body.path : undefined,
+        title: typeof body?.title === 'string' ? body.title : undefined,
+        source: typeof body?.source === 'string' ? body.source : undefined
+      }
+      if (!prompt.trim()) return jsonReply(res, 400, { error: 'Missing prompt' })
+      const result = await ctx.songInfo.lookup(prompt, model, overrides)
+      return jsonReply(res, 200, result)
+    }
+
+    // GET /api/music/song-info?path=... (and identifier=...) — read persisted metadata.
+    if (method === 'GET' && (path === '/api/music/song-info' || path === '/song-info')) {
+      const identifier = url.searchParams.get('path') ?? url.searchParams.get('identifier') ?? ''
+      if (!identifier.trim()) return jsonReply(res, 400, { error: 'Missing path' })
+      const result = ctx.songInfo.get(identifier)
+      if (!result) return jsonReply(res, 404, { error: 'Song metadata not found' })
+      return jsonReply(res, 200, result)
+    }
+
     return jsonReply(res, 404, { error: 'Not found' })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Internal error'
@@ -543,9 +572,10 @@ async function handleRequest(
 export function startCliServer(
   library: LibraryService,
   getMainWindow: () => BrowserWindow | null,
-  resyncLibrary: (rootPath: string) => Promise<BaiduImportResult>
+  resyncLibrary: (rootPath: string) => Promise<BaiduImportResult>,
+  songInfo: SongInfoService
 ): void {
-  const ctx: CliServerContext = { library, getMainWindow, resyncLibrary }
+  const ctx: CliServerContext = { library, songInfo, getMainWindow, resyncLibrary }
 
   authToken = randomBytes(16).toString('hex')
   writeTokenFile(authToken)

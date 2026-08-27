@@ -42,3 +42,16 @@ npm run dist     # 本地打包 dmg + zip（不上传）
 | `BAIDU_SCOPE` | 否（默认 `basic,netdisk`） |
 
 本地开发写在仓库根目录 `.env`（已 gitignore）；CI 打包在 GitHub repo 的 **Settings → Secrets and variables → Actions** 中配置同名 Secrets。
+
+## 歌曲信息 CLI
+
+启动 corner 后可通过命令行查询歌曲介绍和歌词。模型默认使用通义 DashScope 的 `qwen/qwen3.7-plus`（请求时兼容去掉 `qwen/` 前缀），需要在启动应用前设置 `TONGYI_API_KEY`：
+
+```bash
+export TONGYI_API_KEY=…
+corner song-info --prompt "Cesária Évora - Sodade /Volumes/Mote/music/auto/Sodade.mp3"
+corner song-info --prompt "歌曲名：Sodade；本地路径：/Volumes/Mote/music/auto/Sodade.mp3" --model qwen/qwen3.7-plus --json
+corner song-info --get "/Volumes/Mote/music/auto/Sodade.mp3"
+```
+
+查询结果会保存到音乐库 SQLite 的 `song_meta` 表；`--get` 支持歌曲 ID、路径或标题。默认输出分为 `—— 介绍 ——` 和 `—— 歌词 ——` 两块，外语歌词逐行显示原文和中文翻译。

@@ -30,6 +30,9 @@
     "typescript": "^5.6.0"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "^0.84.3",
+    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@mariozechner/pi-tui": "^0.73.1",
     "compare-versions": "^6.1.1",
     "electron-updater": "^6.8.9"
   }
