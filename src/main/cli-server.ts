@@ -549,6 +549,43 @@ async function handleRequest(
         source: typeof body?.source === 'string' ? body.source : undefined
       }
       if (!prompt.trim()) return jsonReply(res, 400, { error: 'Missing prompt' })
+
+      // ?stream=1 返回 SSE（text/event-stream），先发 status:started + phase，再逐块推 chunk，最后发 done。
+      // 未指定 stream 时维持原同步行为（JSON 响应）。
+      if (url.searchParams.get('stream') === '1') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive'
+        })
+        const sseWrite = (event: string, data: unknown): void => {
+          try {
+            res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+          } catch {
+            // 连接已关闭，忽略
+          }
+        }
+        sseWrite('status', { phase: 'started' })
+        try {
+          const result = await ctx.songInfo.lookupStream(
+            prompt,
+            chunk => sseWrite('chunk', { text: chunk }),
+            model,
+            overrides
+          )
+          sseWrite('done', result)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Internal error'
+          sseWrite('error', { error: message })
+        }
+        try {
+          res.end()
+        } catch {
+          // 忽略
+        }
+        return
+      }
+
       const result = await ctx.songInfo.lookup(prompt, model, overrides)
       return jsonReply(res, 200, result)
     }

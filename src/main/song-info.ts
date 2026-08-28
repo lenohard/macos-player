@@ -235,6 +235,88 @@ class PiWebAgentClient {
     return sessionId
   }
 
+  // 流式版 collectAnswer：订阅 pi-web 事件流，逐个 text_delta 累加并通过 onChunk 推送给调用方。
+  // 事件流顺序：connected → message_update(text_delta) → text_end → message_end → prompt_done / agent_end。
+  // 遇到 message_update 以外的 message / message_end 会拿到全量文本，补充覆盖以防丢字。
+  // SSE 不可靠：若未拿到完整文本，调用方应继续走 recoverAnswer。
+  private async streamAnswer(
+    base: string,
+    sessionId: string,
+    signal: AbortSignal,
+    onChunk: (text: string) => void
+  ): Promise<string> {
+    const res = await fetch(`${base}/api/agent/${encodeURIComponent(sessionId)}/events`, {
+      headers: { accept: 'text/event-stream' },
+      signal
+    }).catch((error: unknown) => {
+      if (isAbortError(error)) throw error
+      if (isNetworkError(error)) throw piWebUnavailableError(base, (error as Error).message)
+      throw error
+    })
+    if (!res.ok || !res.body) throw piWebUnavailableError(base, `事件流 HTTP ${res.status}`)
+
+    let text = ''
+    let lastSent = '' // 已通过 onChunk 推送过的累计文本
+    const flush = (): void => {
+      if (text.length > lastSent.length) {
+        onChunk(text.slice(lastSent.length))
+        lastSent = text
+      }
+    }
+
+    for await (const event of readSseEvents(res.body)) {
+      const payload = asRecord(tryParseJson(event.data))
+      if (!payload) continue
+      const type = event.name || asText(payload.type)
+      if (type === 'prompt_error') {
+        throw new Error(`pi-web 执行失败：${asText(payload.error ?? payload.message) || '未知错误'}`)
+      }
+      // text_delta 增量：assistantMessageEvent.delta 是片段，拼到 text 末尾后推送。
+      if (type === 'message_update') {
+        const inner = asRecord(payload.assistantMessageEvent)
+        const innerType = inner ? asText(inner.type) : ''
+        if (innerType === 'text_delta' && inner) {
+          const delta = asText(inner.delta)
+          if (delta) {
+            text += delta
+            flush()
+          }
+        } else if (innerType === 'text_end' && inner) {
+          // text_end.content 是完整最终文本，用于纠正丢字（低优先级：若当前 text 已被增量填充，不覆盖；仅在 text 仍为空时补全）
+          const content = asText(inner.content)
+          if (content && !text) {
+            text = content
+            flush()
+          }
+        }
+        continue
+      }
+      if (type === 'message_end') {
+        const message = asRecord(payload.message)
+        if (message && asText(payload.stopReason ?? message.stopReason) === 'endTurn') {
+          const finalText = extractMessageText(message)
+          if (finalText && finalText.length > text.length) {
+            text = finalText
+            flush()
+          }
+        }
+      } else if (type === 'prompt_done') {
+        const finalText = extractMessageText(payload)
+        if (finalText && finalText.length > text.length) {
+          text = finalText
+          flush()
+        }
+        break
+      } else if (type === 'agent_end') {
+        break
+      }
+    }
+    if (text.length > lastSent.length) {
+      onChunk(text.slice(lastSent.length))
+    }
+    return text.trim()
+  }
+
   private async collectAnswer(base: string, sessionId: string, signal: AbortSignal): Promise<string> {
     let res: Response
     try {
@@ -278,7 +360,7 @@ class PiWebAgentClient {
     for (let attempt = 0; attempt < 30; attempt++) {
       const res = await fetch(`${base}/api/agent/${encodeURIComponent(sessionId)}`, { signal }).catch(() => null)
       const body = asRecord(res && res.ok ? await res.json().catch(() => null) : null)
-      const state = asRecord(body?.data) ?? body
+      const state = asRecord(body?.data) ?? asRecord(body?.state) ?? body
       if (state && state.isStreaming !== true && state.isPromptRunning !== true) {
         const file = asText(state.sessionFile)
         return file ? this.readLastAssistantText(file) : ''
@@ -301,10 +383,43 @@ class PiWebAgentClient {
     return text.trim()
   }
 
+  // 流式问 agent：text 增量通过 onChunk 推送，函数 resolve 时返回完整文本。
+  // 内部复用 streamAnswer + recoverAnswer 兜底。
+  async askStream(
+    modelName: string,
+    message: string,
+    onChunk: (text: string) => void
+  ): Promise<string> {
+    const base = this.piWebBaseUrl()
+    const separator = modelName.indexOf(':')
+    const provider = separator > 0 ? modelName.slice(0, separator) : 'opencode-go'
+    const modelId = separator > 0 ? modelName.slice(separator + 1) : modelName
+
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), AGENT_TIMEOUT_MS)
+    try {
+      const sessionId = await this.createSession(base, provider, modelId, message, controller.signal)
+      let text = ''
+      try {
+        text = await this.streamAnswer(base, sessionId, controller.signal, onChunk)
+      } catch (error) {
+        if (!isAbortError(error)) throw error
+      }
+      if (!text) text = await this.recoverAnswer(base, sessionId, controller.signal)
+      if (!text) throw new Error('pi-web agent 未返回歌曲信息。')
+      return text
+    } catch (error) {
+      if (isAbortError(error)) throw new Error('歌曲联网检索超时，请稍后重试。')
+      throw error
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
   async ask(modelName: string, message: string): Promise<string> {
     const base = this.piWebBaseUrl()
-    const separator = modelName.indexOf('/')
-    const provider = separator > 0 ? modelName.slice(0, separator) : 'qwen'
+    const separator = modelName.indexOf(':')
+    const provider = separator > 0 ? modelName.slice(0, separator) : 'opencode-go'
     const modelId = separator > 0 ? modelName.slice(separator + 1) : modelName
 
     const controller = new AbortController()
@@ -360,11 +475,45 @@ export class SongInfoService {
   }
 
   private getDefaultModel(): string {
-    return this.agent['getConfig']().defaultModel || 'qwen/qwen3.7-plus'
+    return this.agent['getConfig']().defaultModel || 'opencode-go:qwen3.8-max'
   }
 
   get(identifier: string): SongMeta | null {
     return this.library.getSongMeta(identifier)
+  }
+
+  // 流式版 lookup：text 增量 → onPartialText(纯文本，未解析 JSON)，完成时 upsert 并 onResult(最终 SongMeta)。
+  async lookupStream(
+    prompt: string,
+    onPartialText: (text: string) => void,
+    modelId?: string,
+    overrides?: Partial<PromptMetadata>
+  ): Promise<SongMeta> {
+    const trimmedPrompt = prompt.trim()
+    if (!trimmedPrompt) throw new Error('prompt 不能为空。')
+    const parsedMetadata = promptMetadata(trimmedPrompt)
+    const metadata: PromptMetadata = {
+      path: overrides?.path?.trim() || parsedMetadata.path,
+      title: overrides?.title?.trim() || parsedMetadata.title,
+      source: overrides?.source?.trim() || parsedMetadata.source
+    }
+    const model = modelId?.trim() || this.getDefaultModel()
+
+    // 把 agent 的纯文本流去重后逐步推给上层（agent 可能输出很多中间 thinking 文本，仅推送"看起来像最终答案"的稳定段）。
+    // 简化：直接逐字推送原始文本，让前端实时显示；解析失败时回退到整段解析。
+    const text = await this.agent.askStream(model, this.agentPrompt(trimmedPrompt), chunk => {
+      onPartialText(chunk)
+    })
+    const result = normalizeResult(parseJson(text))
+    return this.library.upsertSongMeta({
+      ...metadata,
+      intro: result.intro,
+      lyrics: lyricsText(result.lyrics),
+      lyricsBilingual: bilingualLines(result.lyrics),
+      model,
+      found: result.found,
+      reason: result.reason
+    })
   }
 
   private async askAgent(prompt: string, modelName: string): Promise<SongInfoResult> {

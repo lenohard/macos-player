@@ -5,7 +5,7 @@ import type { AiConfig, AiModelInfo, AiTestResult } from '../shared/ipc'
 
 const REQUEST_TIMEOUT_MS = 15_000
 const DEFAULT_PI_WEB_URL = 'http://100.109.27.51:8964'
-const DEFAULT_MODEL = 'qwen/qwen3.7-plus'
+const DEFAULT_MODEL = 'opencode-go:qwen3.8-max'
 
 function normalizeUrl(url: string): string {
   return url.trim().replace(/\/+$/, '') || DEFAULT_PI_WEB_URL

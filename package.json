@@ -1,6 +1,6 @@
 {
   "name": "corner",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "private": true,
   "description": "macOS music player for local files and cloud libraries",
   "author": "lenohard",

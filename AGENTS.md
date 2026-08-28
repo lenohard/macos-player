@@ -223,6 +223,15 @@ git remote -v   # origin → git@github.com:lenohard/macos-player.git
 Push only when the user asks; do not force-push `main`.
 
 
+### pi-web integration (song-info / agent)
+
+- **模型 ID 格式**：pi-web 用 `provider:modelId`（如 `opencode-go:qwen3.8-max`），**不是** `provider/modelId`。`PiWebAgentClient.ask` 必须用 `:` 切分，默认 provider `opencode-go`。
+- **模型 scope 校验**：pi-web 启动时检查 enabled scope，**未在 scope 列表的模型直接 reject**（`Model is not available in the enabled scope`）。改默认模型前先 `curl http://100.109.27.51:8964/api/models` 看 `modelList[*].id` 和 `scopeWarnings`。
+- **SSE 事件不重放**：`/api/agent/<id>/events` 只发订阅后产生的事件；订阅晚于完成/断流则拿不到任何 event。`recoverAnswer` 轮询 `/api/agent/<id>` → 读 `sessionFile` JSONL 拿最后一段 assistant 文本。
+- **pi-web state 响应结构**：`/api/agent/<id>` 返回 `{state: {isStreaming, isPromptRunning, sessionFile}, ...}`，**state 字段在 `body.state`，不在 `body.data`**（create 响应是 `body.data`）。`recoverAnswer` 必须 `asRecord(body?.data) ?? asRecord(body?.state) ?? body`，否则 `sessionFile` 永远 undefined → 静默返回空串 → 表现「pi-web agent 未返回歌曲信息」。
+- **mac-remote-control PWA 硬编码模型**：`static/app.js` 顶部有 `SONG_INFO_MODEL` 常量，改 corner 默认模型时必须同步改 PWA，否则 PWA 发的还是旧模型。
+- **SSE 流式转发链路（screenshot_server.py）**：`corner_request` 用 `urlopen` + `response.read()` 一次性读 JSON，**不能直接透传 SSE**。`/api/music/song-info?stream=1` 需走专用路径：`send_response(200) + text/event-stream 头` 后用 `response.read(4096)` 循环 + `self.wfile.flush()` 逐块转发，最后写 `event: error` SSE 帧处理异常。
+
 ## Reference
 ~/projects/deepchat
 When you have some issuse or have to make some decidisons You can refere to this repo whichi I think is a good and mature electron app.
