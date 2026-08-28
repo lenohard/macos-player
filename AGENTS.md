@@ -205,6 +205,15 @@ Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by
 - **正确做法（已实现）**：① resync 前先 `library.ensurePlaylistForRoot(sourceId, rootPath)` —— 若关联歌单不存在则重建并修复 `library_roots.playlist_id`（自愈悬空引用，旧库也能恢复）；② `deletePlaylist` 若目标歌单被 `library_roots` 引用则直接 throw（「是音乐库的关联歌单，不能删除」），从源头杜绝悬空引用。
 - **`library_roots.playlist_id` 是无外键的裸列**：它不 `REFERENCES playlists(id)`，所以删除歌单不会自动 CASCADE，也检测不到悬空。重命名/删除歌单时务必走 guard。
 
+## 本地 AI 服务（pi-web，2026-08-28 决策）
+
+- **方案 A**：corner 不内嵌 pi SDK（`@earendil-works/pi-coding-agent`），改为调用本地 **pi-web** 服务（https://github.com/agegr/pi-web ，Next.js，corner 默认 `http://127.0.0.1:8964`，env `PI_WEB_URL` 可覆盖）。原因：用户多个 app 都需要同款 model/agent 能力，集中一处管 key + 扩展。
+- **无退化**：pi-web 不可达直接报错（用户明确要求），不做降级路径、不做端口自动发现。
+- 本机常驻（2026-08-28 定）：**launchd** `~/Library/LaunchAgents/com.pi-web.plist`（Label `com.pi-web`，RunAtLoad+KeepAlive），稳定安装 `~/opt/pi-web`，plist 用 node 绝对路径直启 `bin/pi-web.js`（**launchd 禁用 npx**：冷启动全量解析依赖 + 无 PATH，详见 doc-center skill `pi-web-http-api.md`）。`0.0.0.0:8964` **无鉴权**（Tailscale `100.109.27.51:8964`）；日志 `~/Library/Logs/pi-web.{log,err.log}`；升级 = `cd ~/opt/pi-web && npm i @agegr/pi-web@新 && launchctl kickstart -k gui/$(id -u)/com.pi-web`。
+- 调用模式：`POST /api/agent/new` body `{cwd, type:"prompt", message, provider, modelId, thinkingLevel:"off"}`（**不传 toolNames**——它只收内置工具名，扩展工具如 web_search 由服务端自动加载）→ 立刻订阅 `GET /api/agent/[id]/events`（SSE 不重放，晚订阅=丢消息），以 `message_end(stopReason=endTurn)` 为主、`prompt_done` 兜底；SSE 为空时轮询 `GET /api/agent/:id` 解析 `sessionFile` JSONL 恢复（`recoverAnswer()`）；`prompt_error` 抛错。
+- key/模型配置由 pi-web 侧统一（共享 `~/.pi/agent` 的 auth.json / models.json），corner 不存任何 key。
+- ~~待删~~（2026-08-28 已完成）：HTTP client 化后 dynamic import / vite external / loader 校验已全部移除，pi 依赖已卸载。
+
 ## Remote
 
 ```bash
