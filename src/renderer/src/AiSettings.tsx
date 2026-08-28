@@ -237,19 +237,22 @@ export default function AiSettings() {
 
         {displayModels.length > 0 && (
           <div className="ai-model-list">
-            {displayModels.map(item => (
-              <button
-                key={item.id}
-                type="button"
-                className={`ai-model-row ${item.id === defaultModel ? 'active' : ''}`}
-                onClick={() => setDefaultModel(item.id)}
-                title={`选用 ${item.id}`}
-              >
-                <span className="ai-model-check">{item.id === defaultModel ? '✓' : ''}</span>
-                <span className="ai-model-id">{item.id}</span>
-                <span className="ai-model-provider">{providerOf(item)}</span>
-              </button>
-            ))}
+            {displayModels.map(item => {
+              const fullId = `${providerOf(item)}:${item.id}`
+              return (
+                <button
+                  key={fullId}
+                  type="button"
+                  className={`ai-model-row ${fullId === defaultModel ? 'active' : ''}`}
+                  onClick={() => setDefaultModel(fullId)}
+                  title={`选用 ${fullId}`}
+                >
+                  <span className="ai-model-check">{fullId === defaultModel ? '✓' : ''}</span>
+                  <span className="ai-model-id">{item.id}</span>
+                  <span className="ai-model-provider">{providerOf(item)}</span>
+                </button>
+              )
+            })}
           </div>
         )}
       </div>

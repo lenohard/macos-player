@@ -239,11 +239,17 @@ class PiWebAgentClient {
   // 事件流顺序：connected → message_update(text_delta) → text_end → message_end → prompt_done / agent_end。
   // 遇到 message_update 以外的 message / message_end 会拿到全量文本，补充覆盖以防丢字。
   // SSE 不可靠：若未拿到完整文本，调用方应继续走 recoverAnswer。
+  // 流式版 collectAnswer：订阅 pi-web 事件流，逐个 text_delta 累加并通过 onChunk 推送给调用方。
+  // 事件流顺序：connected → message_update(text_delta) → text_end → message_end → prompt_done / agent_end。
+  // 遇到 message_update 以外的 message / message_end 会拿到全量文本，补充覆盖以防丢字。
+  // SSE 不可靠：若未拿到完整文本，调用方应继续走 recoverAnswer。
+  // onToolStatus 可选：每次工具状态变化时推一次快照（{toolCallCount, currentTool, toolCalls[]})。
   private async streamAnswer(
     base: string,
     sessionId: string,
     signal: AbortSignal,
-    onChunk: (text: string) => void
+    onChunk: (text: string) => void,
+    onToolStatus?: (status: { toolCallCount: number; currentTool: string; toolCalls: Array<{ name: string; status: 'planning' | 'running' | 'done' }> }) => void
   ): Promise<string> {
     const res = await fetch(`${base}/api/agent/${encodeURIComponent(sessionId)}/events`, {
       headers: { accept: 'text/event-stream' },
@@ -262,6 +268,14 @@ class PiWebAgentClient {
         onChunk(text.slice(lastSent.length))
         lastSent = text
       }
+    }
+    // 工具状态跟踪：以 toolCallStart 计数，tool_execution_start 标记 running，tool_execution_end 标记 done。
+    const toolCalls: Array<{ name: string; status: 'planning' | 'running' | 'done' }> = []
+    const pushToolStatus = (): void => {
+      if (!onToolStatus) return
+      const last = toolCalls[toolCalls.length - 1]
+      const currentTool = last && last.status !== 'done' ? last.name : ''
+      onToolStatus({ toolCallCount: toolCalls.length, currentTool, toolCalls: toolCalls.map(t => ({ ...t })) })
     }
 
     for await (const event of readSseEvents(res.body)) {
@@ -287,6 +301,41 @@ class PiWebAgentClient {
           if (content && !text) {
             text = content
             flush()
+          }
+        } else if (innerType === 'toolcall_start' && inner) {
+          // 工具调用计划阶段：把该工具记为 planning
+          const name = asText(inner.toolName) || asText(inner.name) || 'unknown'
+          toolCalls.push({ name, status: 'planning' })
+          pushToolStatus()
+        } else if (innerType === 'toolcall_end' && inner) {
+          // 计划阶段结束：如果还没有对应的 tool_execution_start，上一条还标 planning，跳到 running
+          // （有些场景 toolcall_end 之后才有 tool_execution_start；这里用 running 作为过渡态，tool_execution_end 覆盖为 done）
+          if (toolCalls.length && toolCalls[toolCalls.length - 1].status === 'planning') {
+            toolCalls[toolCalls.length - 1].status = 'running'
+            pushToolStatus()
+          }
+        }
+        continue
+      }
+      if (type === 'tool_execution_start') {
+        // 真实开始执行工具：若 planning 列表里最后一条匹配，更新为 running；否则追加
+        const name = asText(payload.toolName ?? payload.name) || (toolCalls.length ? toolCalls[toolCalls.length - 1].name : 'unknown')
+        if (toolCalls.length && toolCalls[toolCalls.length - 1].name === name && toolCalls[toolCalls.length - 1].status !== 'done') {
+          toolCalls[toolCalls.length - 1].status = 'running'
+        } else {
+          toolCalls.push({ name, status: 'running' })
+        }
+        pushToolStatus()
+        continue
+      }
+      if (type === 'tool_execution_end') {
+        const name = asText(payload.toolName ?? payload.name)
+        // 找到最近一个 name 匹配且未 done 的工具
+        for (let i = toolCalls.length - 1; i >= 0; i--) {
+          if ((!name || toolCalls[i].name === name) && toolCalls[i].status !== 'done') {
+            toolCalls[i].status = 'done'
+            pushToolStatus()
+            break
           }
         }
         continue
@@ -384,11 +433,13 @@ class PiWebAgentClient {
   }
 
   // 流式问 agent：text 增量通过 onChunk 推送，函数 resolve 时返回完整文本。
+  // onToolStatus 可选：每次工具状态变化时推一次快照。
   // 内部复用 streamAnswer + recoverAnswer 兜底。
   async askStream(
     modelName: string,
     message: string,
-    onChunk: (text: string) => void
+    onChunk: (text: string) => void,
+    onToolStatus?: (status: { toolCallCount: number; currentTool: string; toolCalls: Array<{ name: string; status: 'planning' | 'running' | 'done' }> }) => void
   ): Promise<string> {
     const base = this.piWebBaseUrl()
     const separator = modelName.indexOf(':')
@@ -401,7 +452,7 @@ class PiWebAgentClient {
       const sessionId = await this.createSession(base, provider, modelId, message, controller.signal)
       let text = ''
       try {
-        text = await this.streamAnswer(base, sessionId, controller.signal, onChunk)
+        text = await this.streamAnswer(base, sessionId, controller.signal, onChunk, onToolStatus)
       } catch (error) {
         if (!isAbortError(error)) throw error
       }
@@ -483,11 +534,13 @@ export class SongInfoService {
   }
 
   // 流式版 lookup：text 增量 → onPartialText(纯文本，未解析 JSON)，完成时 upsert 并 onResult(最终 SongMeta)。
+  // onToolStatus 可选：每次工具状态变化时推一次快照。
   async lookupStream(
     prompt: string,
     onPartialText: (text: string) => void,
     modelId?: string,
-    overrides?: Partial<PromptMetadata>
+    overrides?: Partial<PromptMetadata>,
+    onToolStatus?: (status: { toolCallCount: number; currentTool: string; toolCalls: Array<{ name: string; status: 'planning' | 'running' | 'done' }> }) => void
   ): Promise<SongMeta> {
     const trimmedPrompt = prompt.trim()
     if (!trimmedPrompt) throw new Error('prompt 不能为空。')
@@ -501,9 +554,12 @@ export class SongInfoService {
 
     // 把 agent 的纯文本流去重后逐步推给上层（agent 可能输出很多中间 thinking 文本，仅推送"看起来像最终答案"的稳定段）。
     // 简化：直接逐字推送原始文本，让前端实时显示；解析失败时回退到整段解析。
-    const text = await this.agent.askStream(model, this.agentPrompt(trimmedPrompt), chunk => {
-      onPartialText(chunk)
-    })
+    const text = await this.agent.askStream(
+      model,
+      this.agentPrompt(trimmedPrompt),
+      chunk => { onPartialText(chunk) },
+      onToolStatus
+    )
     const result = normalizeResult(parseJson(text))
     return this.library.upsertSongMeta({
       ...metadata,

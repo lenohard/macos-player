@@ -18,7 +18,9 @@ function providerFromId(id: string): string | undefined {
 }
 
 function parseModelItem(item: Record<string, unknown> & { id: string }): AiModelInfo {
+  // 优先读 pi-web 实际返回的 provider 字段（qwen / opencode-go），其次 OpenAI 风格的 owned_by，最后从 id 推。
   const provider =
+    (typeof item.provider === 'string' && item.provider.trim() ? item.provider : undefined) ??
     (typeof item.owned_by === 'string' && item.owned_by.trim() ? item.owned_by : undefined) ??
     providerFromId(item.id)
   return {

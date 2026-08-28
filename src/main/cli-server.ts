@@ -571,7 +571,8 @@ async function handleRequest(
             prompt,
             chunk => sseWrite('chunk', { text: chunk }),
             model,
-            overrides
+            overrides,
+            toolStatus => sseWrite('tools', toolStatus)
           )
           sseWrite('done', result)
         } catch (error) {
