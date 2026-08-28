@@ -1,31 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AiConfig, AiModelInfo, AiProtocol, AiTestResult } from '@shared/ipc'
+import type { AiConfig, AiModelInfo, AiTestResult } from '@shared/ipc'
 
-const PROTOCOLS: Array<{ value: AiProtocol; label: string; hint: string }> = [
-  { value: 'chat', label: 'Chat Completions', hint: 'OpenAI 兼容 · /chat/completions' },
-  { value: 'response', label: 'Responses', hint: 'OpenAI · /responses' },
-  { value: 'message', label: 'Messages', hint: 'Anthropic · /messages' }
-]
-
-const DEFAULT_URLS: Record<AiProtocol, string> = {
-  chat: 'https://opencode.ai/zen/go/v1',
-  response: 'https://opencode.ai/zen/go/v1',
-  message: 'https://opencode.ai/zen/go/v1'
-}
-
-const REASONING_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: '', label: '默认（自适应）' },
-  { value: 'none', label: '禁用' },
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' }
-]
-
-const ENDPOINT_PATHS: Record<AiProtocol, string> = {
-  chat: '/chat/completions',
-  response: '/responses',
-  message: '/messages'
-}
+const DEFAULT_PI_WEB_URL = 'http://100.109.27.51:8964'
+const DEFAULT_MODEL = 'qwen/qwen3.7-plus'
 
 function providerOf(model: AiModelInfo | string): string {
   if (typeof model !== 'string') {
@@ -38,21 +15,11 @@ function providerOf(model: AiModelInfo | string): string {
   return dash > 0 ? model.slice(0, dash) : model
 }
 
-function fullRequestUrl(baseUrl: string, protocol: AiProtocol): string {
-  const normalized = (baseUrl.trim() || DEFAULT_URLS[protocol]).replace(/\/$/, '')
-  return `${normalized}${ENDPOINT_PATHS[protocol]}`
-}
-
 export default function AiSettings() {
-  const [protocol, setProtocol] = useState<AiProtocol>('chat')
-  const [baseUrl, setBaseUrl] = useState(DEFAULT_URLS.chat)
-  const [apiKey, setApiKey] = useState('')
-  const [apiKeyMasked, setApiKeyMasked] = useState('')
-  const [model, setModel] = useState('')
-  const [reasoningEffort, setReasoningEffort] = useState('')
+  const [piWebUrl, setPiWebUrl] = useState(DEFAULT_PI_WEB_URL)
+  const [defaultModel, setDefaultModel] = useState(DEFAULT_MODEL)
 
   const [savedConfig, setSavedConfig] = useState<AiConfig | null>(null)
-  const [hasApiKey, setHasApiKey] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
 
@@ -64,40 +31,25 @@ export default function AiSettings() {
   const [isTesting, setIsTesting] = useState(false)
   const [testResult, setTestResult] = useState<AiTestResult | null>(null)
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
-  const [showApiKey, setShowApiKey] = useState(false)
-  const [isRevealingKey, setIsRevealingKey] = useState(false)
 
-  const baseUrlTouched = useRef(false)
-  const keyDirty = useRef(false)
-  const keyRevealed = useRef(false)
+  const urlTouched = useRef(false)
   const autoFetchAttempted = useRef(false)
   const statusTimer = useRef<number | undefined>(undefined)
 
   const dirty = useMemo(
     () =>
       !savedConfig ||
-      protocol !== savedConfig.protocol ||
-      baseUrl !== savedConfig.baseUrl ||
-      model !== savedConfig.model ||
-      reasoningEffort !== savedConfig.reasoningEffort ||
-      keyDirty.current,
-    [protocol, baseUrl, model, reasoningEffort, apiKey, savedConfig]
+      piWebUrl !== savedConfig.piWebUrl ||
+      defaultModel !== savedConfig.defaultModel,
+    [piWebUrl, defaultModel, savedConfig]
   )
-  const apiKeyConfigured = hasApiKey || (keyDirty.current && apiKey.trim() !== '')
 
   useEffect(() => {
     void window.api.aiGetConfig()
       .then(config => {
-        const normalizedBaseUrl = config.baseUrl || DEFAULT_URLS[config.protocol]
-        setProtocol(config.protocol)
-        setBaseUrl(normalizedBaseUrl)
-        setModel(config.model)
-        setReasoningEffort(config.reasoningEffort)
-        setHasApiKey(config.hasApiKey)
-        setApiKeyMasked(config.apiKeyMasked ?? '')
-        setApiKey('')
-        keyDirty.current = false
-        setSavedConfig({ ...config, baseUrl: normalizedBaseUrl })
+        setPiWebUrl(config.piWebUrl || DEFAULT_PI_WEB_URL)
+        setDefaultModel(config.defaultModel || DEFAULT_MODEL)
+        setSavedConfig(config)
         setLoaded(true)
       })
       .catch(error => {
@@ -116,11 +68,6 @@ export default function AiSettings() {
     )
   }, [models, searchText])
 
-  const requestUrl = useMemo(
-    () => fullRequestUrl(baseUrl, protocol),
-    [baseUrl, protocol]
-  )
-
   const flashStatus = useCallback((message: string): void => {
     setSaveStatus(message)
     if (statusTimer.current !== undefined) window.clearTimeout(statusTimer.current)
@@ -131,24 +78,12 @@ export default function AiSettings() {
     setSaveStatus('保存中…')
     try {
       const config: AiConfig = {
-        protocol,
-        baseUrl: baseUrl.trim() || DEFAULT_URLS[protocol],
-        apiKey: keyDirty.current ? apiKey.trim() : '',
-        model: model.trim(),
-        reasoningEffort,
-        hasApiKey
+        piWebUrl: piWebUrl.trim() || DEFAULT_PI_WEB_URL,
+        defaultModel: defaultModel.trim() || DEFAULT_MODEL
       }
       const saved = await window.api.aiSaveConfig(config)
-      keyDirty.current = false
-      keyRevealed.current = false
-      setProtocol(saved.protocol)
-      setBaseUrl(saved.baseUrl)
-      setModel(saved.model)
-      setReasoningEffort(saved.reasoningEffort)
-      setHasApiKey(saved.hasApiKey)
-      setApiKeyMasked(saved.apiKeyMasked ?? '')
-      setApiKey('')
-      setShowApiKey(false)
+      setPiWebUrl(saved.piWebUrl)
+      setDefaultModel(saved.defaultModel)
       setSavedConfig(saved)
       setTestResult(null)
       flashStatus('已保存 ✓')
@@ -157,38 +92,13 @@ export default function AiSettings() {
       setSaveStatus(`保存失败：${error instanceof Error ? error.message : String(error)}`)
       return null
     }
-  }, [protocol, baseUrl, apiKey, model, reasoningEffort, hasApiKey, flashStatus])
+  }, [piWebUrl, defaultModel, flashStatus])
 
   useEffect(() => {
     if (!loaded || !dirty || configError) return
     const timer = window.setTimeout(() => void saveNow(), 600)
     return () => window.clearTimeout(timer)
   }, [loaded, dirty, configError, saveNow])
-
-  const toggleApiKeyVisibility = useCallback(async (): Promise<void> => {
-    if (showApiKey) {
-      setShowApiKey(false)
-      if (keyRevealed.current) {
-        keyRevealed.current = false
-        setApiKey('')
-      }
-      return
-    }
-
-    if (hasApiKey && !keyDirty.current) {
-      setIsRevealingKey(true)
-      try {
-        setApiKey(await window.api.aiRevealApiKey())
-        keyRevealed.current = true
-      } catch (error) {
-        flashStatus(`读取 API Key 失败：${error instanceof Error ? error.message : String(error)}`)
-        return
-      } finally {
-        setIsRevealingKey(false)
-      }
-    }
-    setShowApiKey(true)
-  }, [apiKey, hasApiKey, showApiKey, flashStatus])
 
   const fetchModels = useCallback(async (): Promise<void> => {
     setModelError(null)
@@ -228,11 +138,6 @@ export default function AiSettings() {
       }
       config = saved
     }
-    if (!config?.hasApiKey) {
-      setTestResult({ ok: false, message: '请先填写 API Key，再测试模型回复。' })
-      return
-    }
-
     setIsTesting(true)
     try {
       setTestResult(await window.api.aiTestConnection())
@@ -243,16 +148,10 @@ export default function AiSettings() {
     }
   }, [dirty, saveNow, savedConfig])
 
-  function switchProtocol(next: AiProtocol): void {
-    setProtocol(next)
-    if (!baseUrlTouched.current) setBaseUrl(DEFAULT_URLS[next])
-    setTestResult(null)
-  }
-
   return (
     <div className="library-panel ai-settings">
       <div className="panel-header-row">
-        <p className="panel-title">大模型接入</p>
+        <p className="panel-title">pi-web Agent</p>
         {saveStatus && (
           <span className={saveStatus.startsWith('保存失败') ? 'inline-error' : 'ai-save-ok'}>{saveStatus}</span>
         )}
@@ -263,85 +162,30 @@ export default function AiSettings() {
         <p className="ai-card-title">连接</p>
 
         <div className="ai-field">
-          <span className="ai-field-label">Base URL</span>
+          <span className="ai-field-label">pi-web 地址</span>
           <div className="ai-input-row">
             <input
               type="text"
-              value={baseUrl}
-              placeholder={DEFAULT_URLS[protocol]}
+              value={piWebUrl}
+              placeholder={DEFAULT_PI_WEB_URL}
               onChange={event => {
-                baseUrlTouched.current = true
-                setBaseUrl(event.target.value)
+                urlTouched.current = true
+                setPiWebUrl(event.target.value)
               }}
               spellCheck={false}
             />
-            {baseUrl !== DEFAULT_URLS[protocol] && (
-              <button className="quiet-button" onClick={() => { baseUrlTouched.current = false; setBaseUrl(DEFAULT_URLS[protocol]) }}>
+            {piWebUrl !== DEFAULT_PI_WEB_URL && (
+              <button className="quiet-button" onClick={() => { urlTouched.current = false; setPiWebUrl(DEFAULT_PI_WEB_URL) }}>
                 默认
               </button>
             )}
           </div>
-          <span className="ai-field-note ai-endpoint-note">实际请求：{requestUrl}</span>
-        </div>
-
-        <div className="ai-field">
-          <span className="ai-field-label">协议</span>
-          <select
-            value={protocol}
-            onChange={event => switchProtocol(event.target.value as AiProtocol)}
-          >
-            {PROTOCOLS.map(option => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-          <span className="ai-field-note">
-            {PROTOCOLS.find(option => option.value === protocol)?.hint}
-          </span>
-        </div>
-
-        <div className="ai-field">
-          <span className="ai-field-label">API Key</span>
-          <div className="ai-key-wrapper">
-            <input
-              type={showApiKey ? 'text' : 'password'}
-              value={apiKey}
-              placeholder={hasApiKey ? (apiKeyMasked || '已保存密钥 · 留空保持不变') : '粘贴你的 API Key…'}
-              onChange={event => {
-                keyDirty.current = true
-                keyRevealed.current = false
-                setApiKeyMasked('')
-                setApiKey(event.target.value)
-              }}
-              spellCheck={false}
-              autoComplete="off"
-            />
-            <button
-              type="button"
-              className="ai-visibility-button"
-              onClick={() => void toggleApiKeyVisibility()}
-              disabled={isRevealingKey}
-              aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
-              title={showApiKey ? '隐藏 API Key' : '显示 API Key'}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
-                <circle cx="12" cy="12" r="2.5" />
-                {!showApiKey && <path d="M3 3l18 18" />}
-              </svg>
-            </button>
-          </div>
-          <span className={`ai-field-note ${apiKeyConfigured ? '' : 'ai-warn'}`}>
-            {hasApiKey
-              ? '已使用系统钥匙串安全保存。留空保存会保留当前密钥。'
-              : apiKey.trim()
-                ? '已填写，稍后会自动保存。'
-                : '尚未设置 API Key。'}
-          </span>
+          <span className="ai-field-note">pi-web 本地服务地址，默认为 {DEFAULT_PI_WEB_URL}</span>
         </div>
 
         <div className="ai-test-row">
           <button className="quiet-button" onClick={() => void runTest()} disabled={isTesting}>
-            {isTesting ? '测试中…' : '测试模型回复'}
+            {isTesting ? '测试中…' : '测试连接'}
           </button>
           {testResult && (
             <span className={`ai-test-result ${testResult.ok ? 'ok' : 'fail'}`}>
@@ -354,28 +198,19 @@ export default function AiSettings() {
       <div className="ai-card">
         <div className="ai-card-heading">
           <p className="ai-card-title">模型</p>
-          {model && <span className="ai-selected-model" title={model}>已选 {model}</span>}
+          {defaultModel && <span className="ai-selected-model" title={defaultModel}>已选 {defaultModel}</span>}
         </div>
 
-        <div className="ai-model-primary-row">
-          <label className="ai-field">
-            <span className="ai-field-label">当前模型</span>
-            <input
-              type="text"
-              value={model}
-              placeholder="选择下方模型，或手动输入模型 ID"
-              onChange={event => setModel(event.target.value)}
-              spellCheck={false}
-            />
-          </label>
-          <label className="ai-field ai-reasoning-field">
-            <span className="ai-field-label">思考强度</span>
-            <select value={reasoningEffort} onChange={event => setReasoningEffort(event.target.value)}>
-              {REASONING_OPTIONS.map(option => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
+        <div className="ai-field">
+          <span className="ai-field-label">默认模型</span>
+          <input
+            type="text"
+            value={defaultModel}
+            placeholder={DEFAULT_MODEL}
+            onChange={event => setDefaultModel(event.target.value)}
+            spellCheck={false}
+          />
+          <span className="ai-field-note">默认模型 ID，如 {DEFAULT_MODEL}</span>
         </div>
 
         <div className="ai-browser-controls">
@@ -396,7 +231,7 @@ export default function AiSettings() {
 
         {models.length === 0 && (
           <p className="ai-model-empty">
-            {isLoadingModels ? '正在获取公开模型列表…' : '暂无模型；可刷新公开模型目录，或直接输入模型 ID。'}
+            {isLoadingModels ? '正在获取模型列表…' : '暂无模型；可刷新获取，或直接输入模型 ID。'}
           </p>
         )}
 
@@ -406,11 +241,11 @@ export default function AiSettings() {
               <button
                 key={item.id}
                 type="button"
-                className={`ai-model-row ${item.id === model ? 'active' : ''}`}
-                onClick={() => setModel(item.id)}
+                className={`ai-model-row ${item.id === defaultModel ? 'active' : ''}`}
+                onClick={() => setDefaultModel(item.id)}
                 title={`选用 ${item.id}`}
               >
-                <span className="ai-model-check">{item.id === model ? '✓' : ''}</span>
+                <span className="ai-model-check">{item.id === defaultModel ? '✓' : ''}</span>
                 <span className="ai-model-id">{item.id}</span>
                 <span className="ai-model-provider">{providerOf(item)}</span>
               </button>

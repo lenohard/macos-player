@@ -392,7 +392,7 @@ ipcMain.handle(IPC_CHANNELS.playbackAckCommand, (_event, commandId: string): voi
 })
 
 ipcMain.handle(IPC_CHANNELS.aiGetConfig, () => aiService.getConfig())
-ipcMain.handle(IPC_CHANNELS.aiRevealApiKey, () => aiService.revealApiKey())
+
 ipcMain.handle(IPC_CHANNELS.aiSaveConfig, (_event, config) => aiService.saveConfig(config))
 ipcMain.handle(IPC_CHANNELS.aiFetchModels, () => aiService.fetchModels())
 ipcMain.handle(IPC_CHANNELS.aiTestConnection, () => aiService.testConnection())
@@ -418,7 +418,7 @@ app.whenReady().then(() => {
       }
       throw new Error('该目录尚未导入，请先执行导入。')
     },
-    new SongInfoService(getLibrary())
+    new SongInfoService(getLibrary(), () => aiService.getConfig())
   )
   installApplicationMenu()
 

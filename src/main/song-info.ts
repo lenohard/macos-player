@@ -4,14 +4,10 @@ import type { LibraryService, SongLyricsLine, SongMeta } from './library'
 
 // song-info 通过本地 pi-web 服务（https://github.com/agegr/pi-web）联网检索歌曲资料。
 // corner 不内嵌 pi SDK、不存任何 key：模型/鉴权由 pi-web 侧统一（共享 ~/.pi/agent）。
-// 服务地址默认 http://127.0.0.1:8964（launchd 常驻），可用环境变量 PI_WEB_URL 覆盖；不可达直接报错，不做降级。
+// 服务地址和默认模型从 AiConfig 读取（用户可在 AI 设置页配置）。
 
-const DEFAULT_MODEL = 'qwen/qwen3.7-plus'
 const AGENT_TIMEOUT_MS = 240_000
-
-function piWebBaseUrl(): string {
-  return (process.env.PI_WEB_URL?.trim() || 'http://127.0.0.1:8964').replace(/\/+$/, '')
-}
+type ConfigGetter = () => { piWebUrl: string; defaultModel: string }
 
 function piWebUnavailableError(base: string, detail: string): Error {
   return new Error(`pi-web 服务不可达（${base}）。请先运行 npx @agegr/pi-web 启动本地服务后重试。${detail ? ` 详情：${detail}` : ''}`)
@@ -202,6 +198,12 @@ function sleep(ms: number): Promise<void> {
 }
 
 class PiWebAgentClient {
+  constructor(private readonly getConfig: ConfigGetter) {}
+
+  private piWebBaseUrl(): string {
+    return this.getConfig().piWebUrl.replace(/\/+$/, '')
+  }
+
   private async createSession(base: string, provider: string, modelId: string, message: string, signal: AbortSignal): Promise<string> {
     let res: Response
     try {
@@ -300,7 +302,7 @@ class PiWebAgentClient {
   }
 
   async ask(modelName: string, message: string): Promise<string> {
-    const base = piWebBaseUrl()
+    const base = this.piWebBaseUrl()
     const separator = modelName.indexOf('/')
     const provider = separator > 0 ? modelName.slice(0, separator) : 'qwen'
     const modelId = separator > 0 ? modelName.slice(separator + 1) : modelName
@@ -324,9 +326,11 @@ class PiWebAgentClient {
 }
 
 export class SongInfoService {
-  private readonly agent = new PiWebAgentClient()
+  private readonly agent: PiWebAgentClient
 
-  constructor(private readonly library: LibraryService) {}
+  constructor(private readonly library: LibraryService, getConfig: ConfigGetter) {
+    this.agent = new PiWebAgentClient(getConfig)
+  }
 
   async lookup(
     prompt: string,
@@ -341,7 +345,7 @@ export class SongInfoService {
       title: overrides?.title?.trim() || parsedMetadata.title,
       source: overrides?.source?.trim() || parsedMetadata.source
     }
-    const model = modelId?.trim() || DEFAULT_MODEL
+    const model = modelId?.trim() || this.getDefaultModel()
     const result = await this.askAgent(trimmedPrompt, model)
 
     return this.library.upsertSongMeta({
@@ -353,6 +357,10 @@ export class SongInfoService {
       found: result.found,
       reason: result.reason
     })
+  }
+
+  private getDefaultModel(): string {
+    return this.agent['getConfig']().defaultModel || 'qwen/qwen3.7-plus'
   }
 
   get(identifier: string): SongMeta | null {
@@ -411,4 +419,4 @@ export class SongInfoService {
   }
 }
 
-export { DEFAULT_MODEL }
+

@@ -45,7 +45,7 @@ export const IPC_CHANNELS = {
   playbackAckCommand: 'playback:ackCommand',
   trackContextMenu: 'track:contextMenu',
   aiGetConfig: 'ai:getConfig',
-  aiRevealApiKey: 'ai:revealApiKey',
+
   aiSaveConfig: 'ai:saveConfig',
   aiFetchModels: 'ai:fetchModels',
   aiTestConnection: 'ai:testConnection'
@@ -236,19 +236,9 @@ export type TrackContextMenuAction =
   | { type: 'play' | 'playNext' | 'addToQueue' | 'showDetails' | 'removeFromQueue' | 'removeFromPlaylist' }
   | { type: 'addToPlaylist'; playlistId: string }
 
-export type AiProtocol = 'chat' | 'response' | 'message'
-
 export interface AiConfig {
-  protocol: AiProtocol
-  baseUrl: string
-  /** API key 由主进程 safeStorage 加密保存，返回时始终为空串 */
-  apiKey: string
-  /** 已保存密钥的脱敏预览，如 sk-••••abcd；未保存时 undefined */
-  apiKeyMasked?: string
-  /** 是否已保存过 API key（用于 UI 显示“已保存 / 未设置”） */
-  hasApiKey: boolean
-  model: string
-  reasoningEffort: string
+  piWebUrl: string
+  defaultModel: string
 }
 
 export interface AiModelInfo {
@@ -311,7 +301,6 @@ export interface IPCApi {
   onOpenSettings(listener: () => void): () => void
   onUpdateStatus(listener: (snapshot: UpdateSnapshot) => void): () => void
   aiGetConfig(): Promise<AiConfig>
-  aiRevealApiKey(): Promise<string>
   aiSaveConfig(config: AiConfig): Promise<AiConfig>
   aiFetchModels(): Promise<AiModelInfo[]>
   aiTestConnection(): Promise<AiTestResult>
