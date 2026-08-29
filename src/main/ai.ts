@@ -50,14 +50,16 @@ export class AiService {
     }
     return {
       piWebUrl: normalizeUrl(saved.piWebUrl ?? ''),
-      defaultModel: saved.defaultModel?.trim() || DEFAULT_MODEL
+      defaultModel: saved.defaultModel?.trim() || DEFAULT_MODEL,
+      songInfoPrompt: (saved.songInfoPrompt ?? '').trim()
     }
   }
 
   saveConfig(config: AiConfig): AiConfig {
     const piWebUrl = normalizeUrl(config.piWebUrl)
     const defaultModel = config.defaultModel?.trim() || DEFAULT_MODEL
-    writeFileSync(this.configPath, JSON.stringify({ piWebUrl, defaultModel }, null, 2), { mode: 0o600 })
+    const songInfoPrompt = (config.songInfoPrompt ?? '').trim()
+    writeFileSync(this.configPath, JSON.stringify({ piWebUrl, defaultModel, songInfoPrompt }, null, 2), { mode: 0o600 })
     return this.getConfig()
   }
 

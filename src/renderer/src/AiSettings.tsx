@@ -18,6 +18,7 @@ function providerOf(model: AiModelInfo | string): string {
 export default function AiSettings() {
   const [piWebUrl, setPiWebUrl] = useState(DEFAULT_PI_WEB_URL)
   const [defaultModel, setDefaultModel] = useState(DEFAULT_MODEL)
+  const [songInfoPrompt, setSongInfoPrompt] = useState('')
 
   const [savedConfig, setSavedConfig] = useState<AiConfig | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -40,8 +41,9 @@ export default function AiSettings() {
     () =>
       !savedConfig ||
       piWebUrl !== savedConfig.piWebUrl ||
-      defaultModel !== savedConfig.defaultModel,
-    [piWebUrl, defaultModel, savedConfig]
+      defaultModel !== savedConfig.defaultModel ||
+      songInfoPrompt !== (savedConfig.songInfoPrompt ?? ''),
+    [piWebUrl, defaultModel, songInfoPrompt, savedConfig]
   )
 
   useEffect(() => {
@@ -49,6 +51,7 @@ export default function AiSettings() {
       .then(config => {
         setPiWebUrl(config.piWebUrl || DEFAULT_PI_WEB_URL)
         setDefaultModel(config.defaultModel || DEFAULT_MODEL)
+        setSongInfoPrompt(config.songInfoPrompt ?? '')
         setSavedConfig(config)
         setLoaded(true)
       })
@@ -79,11 +82,13 @@ export default function AiSettings() {
     try {
       const config: AiConfig = {
         piWebUrl: piWebUrl.trim() || DEFAULT_PI_WEB_URL,
-        defaultModel: defaultModel.trim() || DEFAULT_MODEL
+        defaultModel: defaultModel.trim() || DEFAULT_MODEL,
+        songInfoPrompt: songInfoPrompt.trim()
       }
       const saved = await window.api.aiSaveConfig(config)
       setPiWebUrl(saved.piWebUrl)
       setDefaultModel(saved.defaultModel)
+      setSongInfoPrompt(saved.songInfoPrompt ?? '')
       setSavedConfig(saved)
       setTestResult(null)
       flashStatus('已保存 ✓')
@@ -92,7 +97,7 @@ export default function AiSettings() {
       setSaveStatus(`保存失败：${error instanceof Error ? error.message : String(error)}`)
       return null
     }
-  }, [piWebUrl, defaultModel, flashStatus])
+  }, [piWebUrl, defaultModel, songInfoPrompt, flashStatus])
 
   useEffect(() => {
     if (!loaded || !dirty || configError) return
@@ -255,6 +260,28 @@ export default function AiSettings() {
             })}
           </div>
         )}
+      </div>
+
+      <div className="ai-card">
+        <div className="ai-card-heading">
+          <p className="ai-card-title">歌曲信息搜索提示词</p>
+          {songInfoPrompt && (
+            <button className="quiet-button" onClick={() => setSongInfoPrompt('')}>恢复默认</button>
+          )}
+        </div>
+        <div className="ai-field">
+          <textarea
+            className="ai-prompt-input"
+            value={songInfoPrompt}
+            placeholder={'留空使用内置默认提示词。支持 {query} 占位符：用户请求会替换到该位置；未提供时自动追加到末尾。'}
+            onChange={event => setSongInfoPrompt(event.target.value)}
+            rows={10}
+            spellCheck={false}
+          />
+          <span className="ai-field-note">
+            {'提示词必须要求模型最终只输出一行 JSON，字段固定为 found / intro / lyrics / lyricsBilingual / reason（程序按此解析入库）。'}
+          </span>
+        </div>
       </div>
     </div>
   )

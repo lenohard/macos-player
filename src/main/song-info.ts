@@ -7,7 +7,30 @@ import type { LibraryService, SongLyricsLine, SongMeta } from './library'
 // 服务地址和默认模型从 AiConfig 读取（用户可在 AI 设置页配置）。
 
 const AGENT_TIMEOUT_MS = 240_000
-type ConfigGetter = () => { piWebUrl: string; defaultModel: string }
+type ConfigGetter = () => { piWebUrl: string; defaultModel: string; songInfoPrompt?: string }
+
+// 内置默认提示词：不限制搜索次数，明确最终单行 JSON 输出格式与字段要求（程序按此解析入库）。
+const DEFAULT_SONG_INFO_PROMPT = [
+  '你是歌曲资料检索助手。',
+  '',
+  '【检索要求】',
+  '1. 必须使用 web_search 工具联网搜索，禁止仅凭记忆回答',
+  '2. 搜索次数不限：按需多次搜索，直到拿到歌曲介绍和完整歌词（建议分别搜「介绍」和「歌词」，用歌曲本身语言的关键词）',
+  '3. 外语歌曲尽量再搜索歌词的中文翻译',
+  '',
+  '【最终输出格式 — 程序按此解析入库，极其重要】',
+  '全部搜索完成后，只输出一行 JSON：无解释、无前后缀、无 Markdown 代码围栏。字段固定为：',
+  '{"found":true,"intro":"歌曲介绍","lyrics":"完整歌词","lyricsBilingual":[],"reason":""}',
+  '- found (boolean)：是否成功找到歌曲信息',
+  '- intro (string)：歌曲介绍（背景、歌手、专辑等）；无则空字符串',
+  '- lyrics (string)：完整歌词，行间用 \\n 分隔（中文歌曲用此字段）',
+  '- lyricsBilingual (array)：外语歌曲逐行 {"original":"原文","translated":"中文翻译"}；中文歌曲为空数组',
+  '- reason (string)：found=false 时填具体原因；true 时为空字符串',
+  '',
+  '无法确认歌曲或歌词时返回 {"found":false,"intro":"","lyrics":"","lyricsBilingual":[],"reason":"具体原因"}。',
+  '',
+  '用户请求：{query}'
+].join('\n')
 
 function piWebUnavailableError(base: string, detail: string): Error {
   return new Error(`pi-web 服务不可达（${base}）。请先运行 npx @agegr/pi-web 启动本地服务后重试。${detail ? ` 详情：${detail}` : ''}`)
@@ -494,7 +517,7 @@ class PiWebAgentClient {
 export class SongInfoService {
   private readonly agent: PiWebAgentClient
 
-  constructor(private readonly library: LibraryService, getConfig: ConfigGetter) {
+  constructor(private readonly library: LibraryService, private readonly getConfig: ConfigGetter) {
     this.agent = new PiWebAgentClient(getConfig)
   }
 
@@ -526,7 +549,7 @@ export class SongInfoService {
   }
 
   private getDefaultModel(): string {
-    return this.agent['getConfig']().defaultModel || 'opencode-go:qwen3.8-max'
+    return this.getConfig().defaultModel || 'opencode-go:qwen3.8-max'
   }
 
   get(identifier: string): SongMeta | null {
@@ -578,50 +601,13 @@ export class SongInfoService {
   }
 
   private agentPrompt(prompt: string): string {
-    const isChinese = /[\u4e00-\u9fa5]/.test(prompt)
-    const introHint = isChinese 
-      ? '搜索时使用"歌曲名 介绍 百科"等中文关键词'
-      : '搜索时使用"song title introduction wiki"等英文关键词'
-    const lyricsHint = isChinese 
-      ? '搜索时使用"歌曲名 歌词"等中文关键词'
-      : '搜索时使用"song title lyrics"等英文关键词'
-    
-    return [
-      '你是歌曲资料检索助手。',
-      '',
-      '【强制要求】',
-      '1. 必须调用 web_search 工具两次，禁止凭记忆回答',
-      '2. 可用工具：web_search（联网搜索）',
-      '3. 调用 web_search 前不要输出任何文字',
-      '',
-      '【工作流程 - 必须严格执行】',
-      'Step 1: 调用 web_search 搜索歌曲介绍',
-      `  - ${introHint}`,
-      '  - 例如：web_search({ query: "青花瓷 介绍 百科" })',
-      '  - 等待返回结果',
-      '',
-      'Step 2: 调用 web_search 搜索歌曲歌词',
-      `  - ${lyricsHint}`,
-      '  - 例如：web_search({ query: "青花瓷 歌词" })',
-      '  - 等待返回结果',
-      '',
-      'Step 3: 从两次搜索结果中提取歌曲介绍和完整歌词',
-      '',
-      'Step 4: 输出最终 JSON 结果',
-      '',
-      `用户请求：${prompt}`,
-      '',
-      '【最终输出格式 - 极其重要】',
-      '完成两次 web_search 后，最终只输出一行 JSON，不要任何解释、前后缀、Markdown 或代码围栏：',
-      '{"found":true,"intro":"歌曲介绍","lyrics":"歌词字符串或双语数组","lyricsBilingual":[{"original":"原文","translated":"中文翻译"}],"reason":""}',
-      '',
-      '键必须为：found, intro, lyrics, lyricsBilingual, reason',
-      '外语歌词使用 lyricsBilingual 数组，每行一个 {"original":"原文","translated":"中文翻译"}；中文歌词可用 lyrics 字符串。',
-      '无法确认歌曲或歌词时返回 {"found":false,"intro":"","lyrics":"","lyricsBilingual":[],"reason":"具体原因"}。',
-      '',
-      '现在开始：先调用两次 web_search，然后只输出一行 JSON。'
-    ].join('\n')
+    const custom = this.getConfig().songInfoPrompt?.trim()
+    if (custom) {
+      // 自定义提示词：支持 {query} 占位符；未提供时把用户请求追加到末尾
+      return custom.includes('{query}')
+        ? custom.split('{query}').join(prompt)
+        : `${custom}\n\n用户请求：${prompt}`
+    }
+    return DEFAULT_SONG_INFO_PROMPT.split('{query}').join(prompt)
   }
 }
-
-

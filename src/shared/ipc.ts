@@ -239,6 +239,8 @@ export type TrackContextMenuAction =
 export interface AiConfig {
   piWebUrl: string
   defaultModel: string
+  /** 自定义歌曲信息搜索提示词；空 = 内置默认。支持 {query} 占位符 */
+  songInfoPrompt?: string
 }
 
 export interface AiModelInfo {
