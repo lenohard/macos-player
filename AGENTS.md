@@ -212,6 +212,7 @@ Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by
 - 本机常驻（2026-08-28 定）：**launchd** `~/Library/LaunchAgents/com.pi-web.plist`（Label `com.pi-web`，RunAtLoad+KeepAlive），稳定安装 `~/opt/pi-web`，plist 用 node 绝对路径直启 `bin/pi-web.js`（**launchd 禁用 npx**：冷启动全量解析依赖 + 无 PATH，详见 doc-center skill `pi-web-http-api.md`）。`0.0.0.0:8964` **无鉴权**（Tailscale `100.109.27.51:8964`）；日志 `~/Library/Logs/pi-web.{log,err.log}`；升级 = `cd ~/opt/pi-web && npm i @agegr/pi-web@新 && launchctl kickstart -k gui/$(id -u)/com.pi-web`。
 - 调用模式：`POST /api/agent/new` body `{cwd, type:"prompt", message, provider, modelId, thinkingLevel:"off"}`（**不传 toolNames**——它只收内置工具名，扩展工具如 web_search 由服务端自动加载）→ 立刻订阅 `GET /api/agent/[id]/events`（SSE 不重放，晚订阅=丢消息），以 `message_end(stopReason=endTurn)` 为主、`prompt_done` 兜底；SSE 为空时轮询 `GET /api/agent/:id` 解析 `sessionFile` JSONL 恢复（`recoverAnswer()`）；`prompt_error` 抛错。
 - key/模型配置由 pi-web 侧统一（共享 `~/.pi/agent` 的 auth.json / models.json），corner 不存任何 key。
+- **⚠️ SSE `text_delta` 禁止 `trim()`（v0.0.25 血泪教训）**：流式分片常在英文单词边界切开，`asText(delta)` 会删除每个片段首尾空格，产生随机单词粘连；JSON 仍可解析，因此会伪装成模型输出质量问题。delta 必须原样拼接；`text_end` / `message_end` / `prompt_done` 的完整文本可在更长时作为权威覆盖。验证这类链路必须走实际 SSE，不能轮询 `sessionFile` 原始 assistant text（后者绕过了采集层，本次测试因此误判过）。
 - ~~待删~~（2026-08-28 已完成）：HTTP client 化后 dynamic import / vite external / loader 校验已全部移除，pi 依赖已卸载。
 
 ## Remote
