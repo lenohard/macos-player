@@ -123,8 +123,9 @@ function normalizeResult(value: unknown): SongInfoResult {
   const raw = asRecord(value) ?? {}
   const intro = asText(raw.intro)
 
-  // 兼容 lyricsBilingual 和 lyrics 两个字段
-  const lyricsSource = raw.lyricsBilingual ?? raw.lyrics
+  // 兼容 lyricsBilingual 和 lyrics 两个字段；空数组的 lyricsBilingual（如中文歌返回 []）不能吞掉 lyrics 原文，需回退到 lyrics
+  const bilingual = Array.isArray(raw.lyricsBilingual) && raw.lyricsBilingual.length > 0 ? raw.lyricsBilingual : undefined
+  const lyricsSource = bilingual ?? raw.lyrics
 
   const lines: SongLyricsLine[] = Array.isArray(lyricsSource)
     ? lyricsSource.flatMap(item => {

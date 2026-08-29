@@ -157,9 +157,14 @@ export default function AiSettings() {
     <div className="library-panel ai-settings">
       <div className="panel-header-row">
         <p className="panel-title">pi-web Agent</p>
-        {saveStatus && (
-          <span className={saveStatus.startsWith('保存失败') ? 'inline-error' : 'ai-save-ok'}>{saveStatus}</span>
-        )}
+        <div className="ai-save-row">
+          {saveStatus && (
+            <span className={saveStatus.startsWith('保存失败') ? 'inline-error' : 'ai-save-ok'}>{saveStatus}</span>
+          )}
+          <button className="quiet-button" disabled={!dirty || !loaded} onClick={() => void saveNow()}>
+            保存
+          </button>
+        </div>
       </div>
       {configError && <div className="inline-error">读取 AI 配置失败：{configError}</div>}
 

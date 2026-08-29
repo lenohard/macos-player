@@ -1710,6 +1710,12 @@ input:focus-visible {
   gap: 8px;
 }
 
+.ai-save-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .ai-prompt-input {
   width: 100%;
   min-height: 160px;
