@@ -63,6 +63,10 @@ function asText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function asRawText(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
 }
@@ -193,19 +197,18 @@ function extractMessageText(payload: Record<string, unknown>): string {
   const message = asRecord(payload.message) ?? payload
   const role = asText(message.role)
   if (role && role !== 'assistant') return ''
-  const direct = asText(message.text)
+  const direct = asRawText(message.text)
   if (direct) return direct
   const content = message.content
-  if (typeof content === 'string') return content.trim()
+  if (typeof content === 'string') return content
   if (Array.isArray(content)) {
     return content
       .map(part => {
         const entry = asRecord(part)
-        return entry && entry.type === 'text' ? asText(entry.text) : ''
+        return entry && entry.type === 'text' ? asRawText(entry.text) : ''
       })
-      .filter(Boolean)
+      .filter(text => Boolean(text))
       .join('')
-      .trim()
   }
   return ''
 }
@@ -315,15 +318,16 @@ class PiWebAgentClient {
         const inner = asRecord(payload.assistantMessageEvent)
         const innerType = inner ? asText(inner.type) : ''
         if (innerType === 'text_delta' && inner) {
-          const delta = asText(inner.delta)
+          // 流式 delta 绝不能 trim，否则会删除跨 SSE 分片的单词空格。
+          const delta = asRawText(inner.delta)
           if (delta) {
             text += delta
             flush()
           }
         } else if (innerType === 'text_end' && inner) {
-          // text_end.content 是完整最终文本，用于纠正丢字（低优先级：若当前 text 已被增量填充，不覆盖；仅在 text 仍为空时补全）
-          const content = asText(inner.content)
-          if (content && !text) {
+          // text_end.content 是当前文本块的权威内容，可修正流式拼接结果。
+          const content = asRawText(inner.content)
+          if (content && content.length > text.length) {
             text = content
             flush()
           }
