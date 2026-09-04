@@ -96,6 +96,7 @@ Endpoints (all JSON):
 
 | Method | Path | Purpose |
 |--------|------|---------|
+| POST | `/download` | download track audio to local disk: body `{trackId, dest?}` → `{ok, path, bytes, source}` |
 | GET | `/health` | liveness (no auth) |
 | GET | `/status` | playback state (`playback` = `PlaybackState`) |
 | GET | `/events` | SSE stream of `{type:'playback',state}` |

@@ -28,6 +28,7 @@
  *   corner favorite <trackId>                  add to favorites
  *   corner unfavorite <trackId>                remove from favorites
  *   corner history [limit]                     show recently played tracks
+ *   corner download <trackId> [--out <path>]        download track audio to local disk
  *   corner song-info --prompt "<song and path>" [--model <model>]  query song info
  *   corner song-info --get <id|path|title>      read saved song info
  *   corner events                              stream playback events (SSE)
@@ -214,6 +215,12 @@ function formatHuman(data) {
     return lines.join('\n')
   }
 
+  // download result
+  if (data.ok && data.path && data.bytes !== undefined) {
+    const sizeMB = (data.bytes / (1024 * 1024)).toFixed(1)
+    return `Downloaded: ${data.path} (${sizeMB} MB, source: ${data.source})`
+  }
+
   // simple ok response
   if (data.ok !== undefined && data.ok) return 'OK'
 
@@ -252,6 +259,7 @@ Usage:
   corner favorite <trackId>               add to favorites
   corner unfavorite <trackId>             remove from favorites
   corner history [limit]                  show recently played tracks
+  corner download <trackId> [--out <path>] download track audio to local disk
   corner song-info --prompt <text>        query and save song intro/lyrics
   corner song-info --get <id|path|title>  read saved song metadata
   corner events                           stream playback events (SSE)
@@ -447,6 +455,21 @@ async function main() {
       case 'history': {
         const limit = flags[0] ? `?limit=${encodeURIComponent(flags[0])}` : ''
         const data = await request(`/history${limit}`)
+        print(data, useJson)
+        break
+      }
+      case 'download': {
+        if (flags.length === 0) {
+          console.error('Usage: corner download <trackId> [--out <path>]')
+          process.exit(1)
+        }
+        const trackId = flags[0]
+        const outIdx = args.indexOf('--out')
+        const body = { trackId }
+        if (outIdx >= 0 && outIdx + 1 < args.length) {
+          body.dest = args[outIdx + 1]
+        }
+        const data = await request('/download', 'POST', body)
         print(data, useJson)
         break
       }
