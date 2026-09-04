@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import type { Track, TrackDetail as TrackDetailData } from '@shared/ipc'
+import { useEffect, useRef, useState } from 'react'
+import type { SongInfoMeta, SongInfoToolStatus, Track, TrackDetail as TrackDetailData } from '@shared/ipc'
 import { trackSourceLabel } from './sourceLabels'
 
 interface TrackDetailProps {
@@ -34,10 +34,22 @@ type CopyField = 'path' | 'remoteId'
 export default function TrackDetail({ track, onBack, onPlay }: TrackDetailProps) {
   const [detail, setDetail] = useState<TrackDetailData | null>(null)
   const [copiedField, setCopiedField] = useState<CopyField | null>(null)
+  const [songMeta, setSongMeta] = useState<SongInfoMeta | null>(null)
+  const [lookupId, setLookupId] = useState<string | null>(null)
+  const [streamText, setStreamText] = useState('')
+  const [toolStatus, setToolStatus] = useState<SongInfoToolStatus | null>(null)
+  const [lookupError, setLookupError] = useState<string | null>(null)
+  const lookupIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     setDetail(null)
+    setSongMeta(null)
+    setLookupId(null)
+    lookupIdRef.current = null
+    setStreamText('')
+    setToolStatus(null)
+    setLookupError(null)
     window.api.trackGetDetail(track.id)
       .then(found => {
         if (!cancelled) setDetail(found)
@@ -46,11 +58,81 @@ export default function TrackDetail({ track, onBack, onPlay }: TrackDetailProps)
     return () => { cancelled = true }
   }, [track.id])
 
+  // 详情（含 path）载入后查询已保存的歌曲信息
+  useEffect(() => {
+    if (!detail) return
+    let cancelled = false
+    window.api.songInfoGet(detail.path)
+      .then(meta => {
+        if (!cancelled) setSongMeta(meta)
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [detail])
+
   const duration = track.durationSec ?? detail?.durationSec ?? null
   const path = detail?.path ?? null
   const size = detail?.size ?? null
   const modifiedAt = detail?.modifiedAt ?? null
   const remoteId = detail?.remoteId ?? null
+
+  // 订阅歌曲信息检索事件流（增量文本 / 工具状态 / 完成 / 出错）
+  useEffect(() => {
+    const unsubscribe = window.api.onSongInfoEvent(event => {
+      if (!lookupIdRef.current || event.requestId !== lookupIdRef.current) return
+      if (event.type === 'delta') {
+        setStreamText(previous => previous + event.text)
+      } else if (event.type === 'tools') {
+        setToolStatus(event.status)
+      } else if (event.type === 'done') {
+        lookupIdRef.current = null
+        setLookupId(null)
+        setStreamText('')
+        setToolStatus(null)
+        setSongMeta(event.meta)
+      } else {
+        lookupIdRef.current = null
+        setLookupId(null)
+        setStreamText('')
+        setToolStatus(null)
+        setLookupError(event.message)
+      }
+    })
+    return unsubscribe
+  }, [])
+
+  async function startLookup(): Promise<void> {
+    if (lookupIdRef.current) return
+    setLookupError(null)
+    setStreamText('')
+    setToolStatus(null)
+    try {
+      const started = await window.api.songInfoLookup(track.id)
+      lookupIdRef.current = started.requestId
+      setLookupId(started.requestId)
+    } catch (error) {
+      setLookupError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  function renderLyrics(meta: SongInfoMeta) {
+    if (meta.lyricsBilingual.length > 0) {
+      return (
+        <div className="song-info-lyrics bilingual">
+          {meta.lyricsBilingual.map((line, index) => (
+            <p key={index} className="song-info-lyric-line">
+              <span className="original">{line.original}</span>
+              {line.translated && <span className="translated">{line.translated}</span>}
+            </p>
+          ))}
+        </div>
+      )
+    }
+    if (typeof meta.lyrics === 'string' && meta.lyrics) {
+      return <pre className="song-info-lyrics">{meta.lyrics}</pre>
+    }
+    return null
+  }
 
   async function copyValue(value: string, field: CopyField): Promise<void> {
     try {
@@ -144,6 +226,41 @@ export default function TrackDetail({ track, onBack, onPlay }: TrackDetailProps)
           </dd>
         </div>
       </dl>
+
+      <section className="song-info">
+        <div className="song-info-header">
+          <h3>歌曲信息</h3>
+          <button
+            type="button"
+            className="quiet-button"
+            onClick={() => void startLookup()}
+            disabled={lookupId !== null}
+          >
+            {lookupId ? '检索中…' : songMeta?.found ? '重新检索' : 'AI 联网检索'}
+          </button>
+        </div>
+        {lookupError && <p className="song-info-error">{lookupError}</p>}
+        {lookupId ? (
+          <div className="song-info-streaming">
+            {toolStatus && toolStatus.toolCallCount > 0 && (
+              <p className="song-info-tools">
+                已调用工具 {toolStatus.toolCallCount} 次{toolStatus.currentTool ? ` · 正在使用 ${toolStatus.currentTool}` : ''}
+              </p>
+            )}
+            <pre className="song-info-raw">{streamText || '正在联网检索，首次响应可能需要十几秒…'}</pre>
+          </div>
+        ) : songMeta && !songMeta.found ? (
+          <p className="song-info-empty">上次检索未找到：{songMeta.reason || '无原因记录'}</p>
+        ) : songMeta ? (
+          <>
+            {songMeta.intro && <p className="song-info-intro">{songMeta.intro}</p>}
+            {renderLyrics(songMeta)}
+            <p className="song-info-footer">via {songMeta.model} · {new Date(songMeta.updatedAt).toLocaleString()}</p>
+          </>
+        ) : (
+          <p className="song-info-empty">暂无歌曲信息。点击「AI 联网检索」获取歌曲介绍与歌词。</p>
+        )}
+      </section>
     </div>
   )
 }

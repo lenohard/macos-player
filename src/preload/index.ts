@@ -3,6 +3,7 @@ import {
   IPC_CHANNELS,
   OPEN_SETTINGS_CHANNEL,
   PLAYBACK_REMOTE_COMMAND_CHANNEL,
+  SONG_INFO_EVENT_CHANNEL,
   SYNC_PROGRESS_CHANNEL,
   UPDATE_STATUS_CHANNEL,
   type AiConfig,
@@ -15,6 +16,8 @@ import {
   type CloudEntry,
   type IPCApi,
   type RemoteCommand,
+  type SongInfoEvent,
+  type SongInfoMeta,
   type LibraryRootInfo,
   type LibrarySource,
   type PlaybackQueueState,
@@ -108,6 +111,15 @@ const api: IPCApi = {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: UpdateSnapshot) => listener(snapshot)
     ipcRenderer.on(UPDATE_STATUS_CHANNEL, handler)
     return () => ipcRenderer.removeListener(UPDATE_STATUS_CHANNEL, handler)
+  },
+  songInfoGet: (identifier: string): Promise<SongInfoMeta | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.songInfoGet, identifier),
+  songInfoLookup: (trackId: string): Promise<{ requestId: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.songInfoLookup, trackId),
+  onSongInfoEvent: (listener: (event: SongInfoEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: SongInfoEvent) => listener(event)
+    ipcRenderer.on(SONG_INFO_EVENT_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(SONG_INFO_EVENT_CHANNEL, handler)
   },
   aiGetConfig: (): Promise<AiConfig> => ipcRenderer.invoke(IPC_CHANNELS.aiGetConfig),
 

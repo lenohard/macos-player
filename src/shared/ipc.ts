@@ -44,6 +44,8 @@ export const IPC_CHANNELS = {
   playbackPushState: 'playback:pushState',
   playbackAckCommand: 'playback:ackCommand',
   trackContextMenu: 'track:contextMenu',
+  songInfoGet: 'songInfo:get',
+  songInfoLookup: 'songInfo:lookup',
   aiGetConfig: 'ai:getConfig',
 
   aiSaveConfig: 'ai:saveConfig',
@@ -54,6 +56,7 @@ export const IPC_CHANNELS = {
 export const PLAYBACK_REMOTE_COMMAND_CHANNEL = 'playback:remoteCommand'
 export const OPEN_SETTINGS_CHANNEL = 'app:openSettings'
 export const SYNC_PROGRESS_CHANNEL = 'library:syncProgress'
+export const SONG_INFO_EVENT_CHANNEL = 'songInfo:event'
 export const UPDATE_STATUS_CHANNEL = 'update:status'
 
 export type RemoteCommand = (
@@ -236,6 +239,42 @@ export type TrackContextMenuAction =
   | { type: 'play' | 'playNext' | 'addToQueue' | 'showDetails' | 'removeFromQueue' | 'removeFromPlaylist' }
   | { type: 'addToPlaylist'; playlistId: string }
 
+export interface SongLyricsLine {
+  original: string
+  translated: string
+}
+
+export interface SongInfoMeta {
+  id: string
+  path: string
+  title: string
+  intro: string
+  lyrics: string | SongLyricsLine[]
+  lyricsBilingual: SongLyricsLine[]
+  source: string
+  model: string
+  found: boolean
+  reason?: string
+  updatedAt: number
+}
+
+export interface SongInfoToolCall {
+  name: string
+  status: 'planning' | 'running' | 'done'
+}
+
+export interface SongInfoToolStatus {
+  toolCallCount: number
+  currentTool: string
+  toolCalls: SongInfoToolCall[]
+}
+
+export type SongInfoEvent =
+  | { type: 'delta'; requestId: string; text: string }
+  | { type: 'tools'; requestId: string; status: SongInfoToolStatus }
+  | { type: 'done'; requestId: string; meta: SongInfoMeta }
+  | { type: 'error'; requestId: string; message: string }
+
 export interface AiConfig {
   piWebUrl: string
   defaultModel: string
@@ -302,6 +341,9 @@ export interface IPCApi {
   trackContextMenu(request: TrackContextMenuRequest): Promise<TrackContextMenuAction | null>
   onOpenSettings(listener: () => void): () => void
   onUpdateStatus(listener: (snapshot: UpdateSnapshot) => void): () => void
+  songInfoGet(identifier: string): Promise<SongInfoMeta | null>
+  songInfoLookup(trackId: string): Promise<{ requestId: string }>
+  onSongInfoEvent(listener: (event: SongInfoEvent) => void): () => void
   aiGetConfig(): Promise<AiConfig>
   aiSaveConfig(config: AiConfig): Promise<AiConfig>
   aiFetchModels(): Promise<AiModelInfo[]>

@@ -10,13 +10,16 @@ import {
 } from 'electron'
 import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync, unlinkSync } from 'fs'
 import { homedir } from 'os'
+import { randomUUID } from 'crypto'
 import { basename, dirname, extname, join } from 'path'
 import { pathToFileURL } from 'url'
 import {
   IPC_CHANNELS,
   OPEN_SETTINGS_CHANNEL,
+  SONG_INFO_EVENT_CHANNEL,
   SYNC_PROGRESS_CHANNEL,
   UPDATE_STATUS_CHANNEL,
+  type SongInfoEvent,
   type CloudDownloadRequest,
   type CloudEntry,
   type CloudEntryContextMenuAction,
@@ -73,6 +76,13 @@ const appUpdater = new AppUpdater(emitUpdateStatus)
 function getLibrary(): LibraryService {
   if (!library) library = new LibraryService(openLibraryDatabase())
   return library
+}
+
+let songInfoService: SongInfoService | null = null
+
+function getSongInfo(): SongInfoService {
+  if (!songInfoService) songInfoService = new SongInfoService(getLibrary(), () => aiService.getConfig())
+  return songInfoService
 }
 
 function installCli(): string {
@@ -396,6 +406,34 @@ ipcMain.handle(IPC_CHANNELS.aiGetConfig, () => aiService.getConfig())
 ipcMain.handle(IPC_CHANNELS.aiSaveConfig, (_event, config) => aiService.saveConfig(config))
 ipcMain.handle(IPC_CHANNELS.aiFetchModels, () => aiService.fetchModels())
 ipcMain.handle(IPC_CHANNELS.aiTestConnection, () => aiService.testConnection())
+ipcMain.handle(IPC_CHANNELS.songInfoGet, (_event, identifier: string) => getSongInfo().get(identifier))
+ipcMain.handle(IPC_CHANNELS.songInfoLookup, (_event, trackId: string): { requestId: string } => {
+  const detail = getLibrary().getTrackDetail(trackId)
+  if (!detail) throw new Error('曲目不存在。')
+  const requestId = randomUUID()
+  const send = (event: SongInfoEvent): void => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(SONG_INFO_EVENT_CHANNEL, event)
+  }
+  const prompt = [
+    `歌曲名: ${detail.title}`,
+    detail.artist ? `歌手: ${detail.artist}` : '',
+    `文件路径: ${detail.path}`
+  ].filter(Boolean).join('\n')
+  void getSongInfo().lookupStream(
+    prompt,
+    text => send({ type: 'delta', requestId, text }),
+    undefined,
+    { path: detail.path, title: detail.title, source: detail.sourceId },
+    status => send({ type: 'tools', requestId, status })
+  )
+    .then(meta => send({ type: 'done', requestId, meta }))
+    .catch((error: unknown) => send({
+      type: 'error',
+      requestId,
+      message: error instanceof Error ? error.message : String(error)
+    }))
+  return { requestId }
+})
 
 app.whenReady().then(() => {
   getLibrary()
@@ -418,7 +456,9 @@ app.whenReady().then(() => {
       }
       throw new Error('该目录尚未导入，请先执行导入。')
     },
-    new SongInfoService(getLibrary(), () => aiService.getConfig())
+    getSongInfo(),
+    baiduService,
+    webdavService
   )
   installApplicationMenu()
 
