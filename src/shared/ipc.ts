@@ -46,6 +46,7 @@ export const IPC_CHANNELS = {
   trackContextMenu: 'track:contextMenu',
   songInfoGet: 'songInfo:get',
   songInfoLookup: 'songInfo:lookup',
+  trackDownload: 'track:download',
   aiGetConfig: 'ai:getConfig',
 
   aiSaveConfig: 'ai:saveConfig',
@@ -275,6 +276,12 @@ export type SongInfoEvent =
   | { type: 'done'; requestId: string; meta: SongInfoMeta }
   | { type: 'error'; requestId: string; message: string }
 
+export interface TrackDownloadResult {
+  path: string
+  bytes: number
+  source: string
+}
+
 export interface AiConfig {
   piWebUrl: string
   defaultModel: string
@@ -343,6 +350,7 @@ export interface IPCApi {
   onUpdateStatus(listener: (snapshot: UpdateSnapshot) => void): () => void
   songInfoGet(identifier: string): Promise<SongInfoMeta | null>
   songInfoLookup(trackId: string): Promise<{ requestId: string }>
+  trackDownload(trackId: string, dest?: string): Promise<TrackDownloadResult>
   onSongInfoEvent(listener: (event: SongInfoEvent) => void): () => void
   aiGetConfig(): Promise<AiConfig>
   aiSaveConfig(config: AiConfig): Promise<AiConfig>

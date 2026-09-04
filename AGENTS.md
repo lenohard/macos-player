@@ -160,6 +160,7 @@ Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by
 4. Verify with `npm run typecheck` and `npm run build` after substantive changes.
 5. Quark = **WebDAV provider abstraction**; do not implement Aliyun/Quark proprietary APIs unless explicitly requested.
 6. Prefer extending SQLite + IPC over in-memory maps for library state.
+7. **GUI 与 CLI 功能同步（2026-09-04 用户要求）**：新增面向用户的功能时，GUI（renderer + IPC）与 CLI（`cli-server.ts` + `corner-cli.mjs`）应同时提供入口，共用主进程同一套实现（如 `download.ts`），避免一端缺失。
 
 ## Lessons learned (playback, packaging, agents)
 

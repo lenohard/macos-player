@@ -35,6 +35,8 @@ export default function TrackDetail({ track, onBack, onPlay }: TrackDetailProps)
   const [detail, setDetail] = useState<TrackDetailData | null>(null)
   const [copiedField, setCopiedField] = useState<CopyField | null>(null)
   const [songMeta, setSongMeta] = useState<SongInfoMeta | null>(null)
+  const [downloadBusy, setDownloadBusy] = useState(false)
+  const [downloadStatus, setDownloadStatus] = useState('')
   const [lookupId, setLookupId] = useState<string | null>(null)
   const [streamText, setStreamText] = useState('')
   const [toolStatus, setToolStatus] = useState<SongInfoToolStatus | null>(null)
@@ -100,6 +102,20 @@ export default function TrackDetail({ track, onBack, onPlay }: TrackDetailProps)
     })
     return unsubscribe
   }, [])
+
+  async function downloadToLocal(): Promise<void> {
+    if (downloadBusy) return
+    setDownloadBusy(true)
+    setDownloadStatus('')
+    try {
+      const result = await window.api.trackDownload(track.id)
+      setDownloadStatus(`已下载到 ${result.path}`)
+    } catch (error) {
+      setDownloadStatus(`下载失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setDownloadBusy(false)
+    }
+  }
 
   async function startLookup(): Promise<void> {
     if (lookupIdRef.current) return
@@ -168,7 +184,18 @@ export default function TrackDetail({ track, onBack, onPlay }: TrackDetailProps)
         <div className="detail-info">
           <h2>{track.title}</h2>
           <p>{track.artist ?? trackSourceLabel(track.sourceId)}</p>
-          <button className="primary-button" onClick={onPlay}>播放</button>
+          <div className="detail-actions">
+            <button className="primary-button" onClick={onPlay}>播放</button>
+            <button
+              type="button"
+              className="quiet-button"
+              onClick={() => void downloadToLocal()}
+              disabled={downloadBusy}
+            >
+              {downloadBusy ? '下载中…' : '下载'}
+            </button>
+          </div>
+          {downloadStatus && <p className="detail-download-status">{downloadStatus}</p>}
         </div>
       </div>
 

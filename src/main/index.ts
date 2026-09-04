@@ -43,6 +43,7 @@ import { WebDAVService } from './webdav'
 import { syncWebDAVDirectory, resyncWebDAVDirectory } from './webdav-sync'
 import { startCliServer, stopCliServer, setPlaybackState, ackRemoteCommand } from './cli-server'
 import { SongInfoService } from './song-info'
+import { downloadTrack } from './download'
 
 const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.wav'])
 
@@ -406,6 +407,8 @@ ipcMain.handle(IPC_CHANNELS.aiGetConfig, () => aiService.getConfig())
 ipcMain.handle(IPC_CHANNELS.aiSaveConfig, (_event, config) => aiService.saveConfig(config))
 ipcMain.handle(IPC_CHANNELS.aiFetchModels, () => aiService.fetchModels())
 ipcMain.handle(IPC_CHANNELS.aiTestConnection, () => aiService.testConnection())
+ipcMain.handle(IPC_CHANNELS.trackDownload, (_event, trackId: string, dest?: string) =>
+  downloadTrack({ library: getLibrary(), baidu: baiduService, webdav: webdavService }, trackId, dest))
 ipcMain.handle(IPC_CHANNELS.songInfoGet, (_event, identifier: string) => getSongInfo().get(identifier))
 ipcMain.handle(IPC_CHANNELS.songInfoLookup, (_event, trackId: string): { requestId: string } => {
   const detail = getLibrary().getTrackDetail(trackId)

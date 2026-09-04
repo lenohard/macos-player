@@ -1,9 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
-import { existsSync, mkdirSync, statSync, writeFileSync, unlinkSync } from 'fs'
-import { copyFile } from 'fs/promises'
+import { writeFileSync, unlinkSync } from 'fs'
 import { randomBytes, randomUUID, timingSafeEqual } from 'crypto'
-import { basename, dirname, extname, join } from 'path'
-import { homedir } from 'os'
+import { join } from 'path'
 import { app, type BrowserWindow } from 'electron'
 import {
   PLAYBACK_REMOTE_COMMAND_CHANNEL,
@@ -15,6 +13,7 @@ import {
 import type { LibraryService } from './library'
 import type { LibrarySource } from '../shared/ipc'
 import type { SongInfoService } from './song-info'
+import { downloadTrack } from './download'
 import type { BaiduService } from './baidu'
 import type { WebDAVService } from './webdav'
 
@@ -210,28 +209,6 @@ function dispatchRemoteCommand(win: BrowserWindow, command: RemoteCommand): Prom
       resolve(false)
     }
   })
-}
-
-/** 替换文件名中的非法字符 */
-function sanitizeFilename(name: string): string {
-  return name
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
-    .replace(/\.+$/, '')
-    .trim()
-    || 'untitled'
-}
-
-/** 自动处理重名：在文件名后加 (1)、(2)… */
-function findAvailablePath(dest: string): string {
-  if (!existsSync(dest)) return dest
-  const dir = dirname(dest)
-  const ext = extname(dest)
-  const base = basename(dest, ext)
-  for (let i = 1; i < 1000; i += 1) {
-    const candidate = join(dir, `${base} (${i})${ext}`)
-    if (!existsSync(candidate)) return candidate
-  }
-  return join(dir, `${base}_${Date.now()}${ext}`)
 }
 
 function clampVolume(value: unknown): number {
@@ -562,57 +539,14 @@ async function handleRequest(
       const body = (await readJsonBody(req)) as Record<string, unknown> | null
       const trackId = typeof body?.trackId === 'string' ? body.trackId : ''
       if (!trackId) return jsonReply(res, 400, { error: 'Missing trackId' })
-
-      const media = ctx.library.resolveMedia(trackId)
-      if (!media) return jsonReply(res, 404, { error: 'Track not found' })
-
-      const row = ctx.library.getTrackRow(trackId)
-      if (!row) return jsonReply(res, 404, { error: 'Track not found' })
-
-      const ext = extname(row.path)
-      const safeTitle = sanitizeFilename(row.title)
-
-      // 决定目标路径：dest 可为目标目录或完整文件路径，默认 ~/Downloads
-      const rawDest = typeof body?.dest === 'string' ? body.dest : ''
-      let destPath: string
-      if (rawDest) {
-        try {
-          destPath = statSync(rawDest).isDirectory()
-            ? join(rawDest, `${safeTitle}${ext}`)
-            : rawDest
-        } catch {
-          destPath = rawDest
-        }
-      } else {
-        destPath = join(homedir(), 'Downloads', `${safeTitle}${ext}`)
-      }
-      destPath = findAvailablePath(destPath)
-
-      // 确保父目录存在
-      mkdirSync(dirname(destPath), { recursive: true })
-
+      const dest = typeof body?.dest === 'string' ? body.dest : ''
       try {
-        if (media.kind === 'local') {
-          await copyFile(media.path, destPath)
-        } else if (media.kind === 'baidu') {
-          if (!ctx.baidu) {
-            return jsonReply(res, 500, { error: 'Baidu download service not available' })
-          }
-          await ctx.baidu.download(media.path, destPath)
-        } else if (media.kind === 'webdav') {
-          if (!ctx.webdav) {
-            return jsonReply(res, 500, { error: 'WebDAV download service not available' })
-          }
-          await ctx.webdav.download(media.path, destPath)
-        } else {
-          return jsonReply(res, 400, { error: `Unsupported source: ${media.kind}` })
-        }
-
-        const stat = statSync(destPath)
-        return jsonReply(res, 200, { ok: true, path: destPath, bytes: stat.size, source: media.kind })
+        const result = await downloadTrack(ctx, trackId, dest)
+        return jsonReply(res, 200, { ok: true, ...result })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Download failed'
-        return jsonReply(res, 500, { error: message })
+        const notFound = message === '曲目不存在。'
+        return jsonReply(res, notFound ? 404 : 500, { error: message })
       }
     }
 

@@ -18,6 +18,7 @@ import {
   type RemoteCommand,
   type SongInfoEvent,
   type SongInfoMeta,
+  type TrackDownloadResult,
   type LibraryRootInfo,
   type LibrarySource,
   type PlaybackQueueState,
@@ -116,6 +117,8 @@ const api: IPCApi = {
     ipcRenderer.invoke(IPC_CHANNELS.songInfoGet, identifier),
   songInfoLookup: (trackId: string): Promise<{ requestId: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.songInfoLookup, trackId),
+  trackDownload: (trackId: string, dest?: string): Promise<TrackDownloadResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.trackDownload, trackId, dest),
   onSongInfoEvent: (listener: (event: SongInfoEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, event: SongInfoEvent) => listener(event)
     ipcRenderer.on(SONG_INFO_EVENT_CHANNEL, handler)
