@@ -41,6 +41,8 @@ export const IPC_CHANNELS = {
   updateDownload: 'update:download',
   updateInstall: 'update:install',
   cliInstall: 'cli:install',
+  libraryExport: 'library:export',
+  libraryImport: 'library:import',
   playbackPushState: 'playback:pushState',
   playbackAckCommand: 'playback:ackCommand',
   trackContextMenu: 'track:contextMenu',
@@ -160,6 +162,31 @@ export interface CloudDownloadRequest {
 }
 
 export type CloudEntryContextMenuAction = { type: 'download' }
+
+/** 备份文件中的曲目引用：跨机器稳定身份 = (sourceId, path)。 */
+export interface ExportedTrackRef {
+  sourceId: string
+  path: string
+  title: string
+  artist: string | null
+}
+
+export interface LibraryExportData {
+  app: 'corner'
+  version: 1
+  exportedAt: number
+  playlists: Array<{ name: string; tracks: ExportedTrackRef[] }>
+  favorites: ExportedTrackRef[]
+}
+
+export interface LibraryImportResult {
+  playlistsCreated: number
+  playlistsMatched: number
+  tracksAdded: number
+  tracksMissing: number
+  favoritesAdded: number
+  favoritesExisting: number
+}
 
 export interface PlaylistSummary {
   id: string
@@ -343,6 +370,8 @@ export interface IPCApi {
   updateDownload(): Promise<UpdateSnapshot>
   updateInstall(): Promise<boolean>
   cliInstall(): Promise<string>
+  libraryExport(): Promise<string | null>
+  libraryImport(): Promise<LibraryImportResult | null>
   pushPlaybackState(state: PlaybackState): Promise<void>
   ackRemoteCommand(commandId: string): Promise<void>
   trackContextMenu(request: TrackContextMenuRequest): Promise<TrackContextMenuAction | null>

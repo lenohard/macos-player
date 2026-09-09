@@ -3,6 +3,9 @@ import { basename, extname } from 'path'
 import type { LibraryDatabase } from './library-db'
 import type {
   CloudEntry,
+  ExportedTrackRef,
+  LibraryExportData,
+  LibraryImportResult,
   PlaybackQueueState,
   PlaylistSummary,
   RepeatMode,
@@ -696,6 +699,106 @@ export class LibraryService {
       LIMIT ?
     `).all(capped) as unknown as Array<TrackRow & { played_at: number }>
     return rows.map(row => ({ track: rowToTrack(row), playedAt: row.played_at }))
+  }
+
+  /** 导出歌单与收藏（跳过音乐库自动关联歌单，避免换机重导入后重复）。 */
+  exportUserData(): LibraryExportData {
+    const linkedIds = new Set(
+      (this.db.prepare(
+        'SELECT DISTINCT playlist_id FROM library_roots WHERE playlist_id IS NOT NULL'
+      ).all() as Array<{ playlist_id: string }>).map(row => row.playlist_id)
+    )
+    const playlistTracks = this.db.prepare(`
+      SELECT t.source_id, t.path, t.title, t.artist
+      FROM playlist_tracks pt
+      JOIN tracks t ON t.id = pt.track_id
+      WHERE pt.playlist_id = ? AND t.is_deleted = 0
+      ORDER BY pt.position ASC
+    `)
+    const toRef = (row: Record<string, unknown>): ExportedTrackRef => ({
+      sourceId: row.source_id as string,
+      path: row.path as string,
+      title: row.title as string,
+      artist: (row.artist as string | null) ?? null
+    })
+    const playlists = this.listPlaylists()
+      .filter(playlist => !linkedIds.has(playlist.id))
+      .map(playlist => ({
+        name: playlist.name,
+        tracks: (playlistTracks.all(playlist.id) as Array<Record<string, unknown>>).map(toRef)
+      }))
+    const favorites = (this.db.prepare(`
+      SELECT t.source_id, t.path, t.title, t.artist
+      FROM favorites f
+      JOIN tracks t ON t.id = f.track_id
+      WHERE t.is_deleted = 0
+      ORDER BY f.added_at DESC
+    `).all() as Array<Record<string, unknown>>).map(toRef)
+    return { app: 'corner', version: 1, exportedAt: Date.now(), playlists, favorites }
+  }
+
+  /** 导入备份：按 (sourceId, path) 匹配本机曲目；同名歌单合并追加，收藏去重。 */
+  importUserData(data: LibraryExportData): LibraryImportResult {
+    if (!data || !Array.isArray(data.playlists) || !Array.isArray(data.favorites)) {
+      throw new Error('无效的备份文件。')
+    }
+    const findTrackId = (ref: ExportedTrackRef): string | null => {
+      if (!ref || typeof ref.sourceId !== 'string' || typeof ref.path !== 'string') return null
+      const row = this.db.prepare(`
+        SELECT id FROM tracks WHERE source_id = ? AND path = ? AND is_deleted = 0 LIMIT 1
+      `).get(ref.sourceId, ref.path) as { id: string } | undefined
+      return row?.id ?? null
+    }
+
+    const result: LibraryImportResult = {
+      playlistsCreated: 0,
+      playlistsMatched: 0,
+      tracksAdded: 0,
+      tracksMissing: 0,
+      favoritesAdded: 0,
+      favoritesExisting: 0
+    }
+
+    runInTransaction(this.db, () => {
+      for (const playlist of data.playlists) {
+        const name = typeof playlist?.name === 'string' ? playlist.name.trim() : ''
+        if (!name || !Array.isArray(playlist.tracks)) continue
+        const existing = this.db.prepare(
+          'SELECT id FROM playlists WHERE name = ? LIMIT 1'
+        ).get(name) as { id: string } | undefined
+        const playlistId = existing
+          ? (result.playlistsMatched += 1, existing.id)
+          : (result.playlistsCreated += 1, this.createPlaylist(name).id)
+        for (const ref of playlist.tracks) {
+          const trackId = findTrackId(ref)
+          if (!trackId) {
+            result.tracksMissing += 1
+            continue
+          }
+          const inPlaylist = this.db.prepare(
+            'SELECT 1 FROM playlist_tracks WHERE playlist_id = ? AND track_id = ? LIMIT 1'
+          ).get(playlistId, trackId)
+          if (!inPlaylist) {
+            this.addTrackToPlaylist(playlistId, trackId)
+            result.tracksAdded += 1
+          }
+        }
+      }
+      for (const ref of data.favorites) {
+        const trackId = findTrackId(ref)
+        if (!trackId) {
+          result.tracksMissing += 1
+          continue
+        }
+        if (this.isFavorite(trackId)) {
+          result.favoritesExisting += 1
+        } else {
+          this.addFavorite(trackId)
+          result.favoritesAdded += 1
+        }
+      }
+    })
+    return result
   }
 
   upsertSongMeta(input: SongMetaInput): SongMeta {

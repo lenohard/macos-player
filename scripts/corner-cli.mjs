@@ -31,12 +31,14 @@
  *   corner download <trackId> [--out <path>]        download track audio to local disk
  *   corner song-info --prompt "<song and path>" [--model <model>]  query song info
  *   corner song-info --get <id|path|title>      read saved song info
+ *   corner export [file]                  export playlists & favorites to JSON (default: corner-backup-<date>.json)
+ *   corner import <file>                  import playlists & favorites from a backup JSON
  *   corner events                              stream playback events (SSE)
  *
  * JSON output: add --json to any command.
  */
 
-import { readFileSync } from 'fs'
+import { readFileSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
@@ -262,6 +264,8 @@ Usage:
   corner download <trackId> [--out <path>] download track audio to local disk
   corner song-info --prompt <text>        query and save song intro/lyrics
   corner song-info --get <id|path|title>  read saved song metadata
+  corner export [file]                    export playlists & favorites to JSON
+  corner import <file>                    import playlists & favorites from backup
   corner events                           stream playback events (SSE)
 
 Add --json or -j to any command for JSON output.`
@@ -494,6 +498,38 @@ async function main() {
         } else {
           console.error('Usage: corner song-info --prompt "<song and path>" [--model qwen/qwen3.7-plus] | --get <id|path|title>')
           process.exit(1)
+        }
+        break
+      }
+      case 'export': {
+        const data = await request('/export')
+        let file = flags[0]
+        if (!file && !useJson) {
+          file = `corner-backup-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.json`
+        }
+        if (file) {
+          writeFileSync(file, JSON.stringify(data, null, 2))
+          const playlistCount = data.playlists.length
+          const favCount = data.favorites.length
+          if (useJson) print(data, true)
+          else console.log(`Exported ${playlistCount} playlists, ${favCount} favorites → ${file}`)
+        } else {
+          print(data, useJson)
+        }
+        break
+      }
+      case 'import': {
+        if (flags.length === 0) {
+          console.error('Usage: corner import <backup.json>')
+          process.exit(1)
+        }
+        const data = JSON.parse(readFileSync(flags[0], 'utf8'))
+        const result = await request('/import', 'POST', data)
+        if (useJson) print(result, true)
+        else {
+          console.log(`导入完成：新建歌单 ${result.playlistsCreated} 个、合并到已有歌单 ${result.playlistsMatched} 个；` +
+            `新增曲目 ${result.tracksAdded} 首、未找到 ${result.tracksMissing} 首；` +
+            `收藏新增 ${result.favoritesAdded} 首、已存在 ${result.favoritesExisting} 首。`)
         }
         break
       }

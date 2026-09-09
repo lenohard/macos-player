@@ -8,7 +8,7 @@ import {
   protocol,
   type OpenDialogOptions
 } from 'electron'
-import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync, unlinkSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { randomUUID } from 'crypto'
 import { basename, dirname, extname, join } from 'path'
@@ -23,6 +23,8 @@ import {
   type CloudDownloadRequest,
   type CloudEntry,
   type CloudEntryContextMenuAction,
+  type LibraryExportData,
+  type LibraryImportResult,
   type LibrarySource,
   type PlaybackQueueState,
   type PlaybackState,
@@ -345,6 +347,38 @@ ipcMain.handle(IPC_CHANNELS.favoritesAdd, (_event, track: string | Track) => {
 })
 ipcMain.handle(IPC_CHANNELS.favoritesRemove, (_event, trackId: string) => {
   getLibrary().removeFavorite(trackId)
+})
+
+ipcMain.handle(IPC_CHANNELS.libraryExport, async (event): Promise<string | null> => {
+  const options: Electron.SaveDialogOptions = {
+    title: '导出歌单与收藏',
+    defaultPath: `corner-backup-${new Date().toISOString().slice(0, 10)}.json`,
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+    buttonLabel: '导出'
+  }
+  const owner = BrowserWindow.fromWebContents(event.sender)
+  const result = owner
+    ? await dialog.showSaveDialog(owner, options)
+    : await dialog.showSaveDialog(options)
+  if (result.canceled || !result.filePath) return null
+  const data = getLibrary().exportUserData()
+  writeFileSync(result.filePath, JSON.stringify(data, null, 2), 'utf8')
+  return result.filePath
+})
+
+ipcMain.handle(IPC_CHANNELS.libraryImport, async (event): Promise<LibraryImportResult | null> => {
+  const options: OpenDialogOptions = {
+    title: '导入备份',
+    properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  }
+  const owner = BrowserWindow.fromWebContents(event.sender)
+  const result = owner
+    ? await dialog.showOpenDialog(owner, options)
+    : await dialog.showOpenDialog(options)
+  if (result.canceled || result.filePaths.length === 0) return null
+  const data = JSON.parse(readFileSync(result.filePaths[0], 'utf8')) as LibraryExportData
+  return getLibrary().importUserData(data)
 })
 
 ipcMain.handle(IPC_CHANNELS.trackContextMenu, (event, request: TrackContextMenuRequest) =>

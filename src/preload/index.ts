@@ -15,6 +15,7 @@ import {
   type CloudEntryContextMenuAction,
   type CloudEntry,
   type IPCApi,
+  type LibraryImportResult,
   type RemoteCommand,
   type SongInfoEvent,
   type SongInfoMeta,
@@ -97,6 +98,8 @@ const api: IPCApi = {
   updateDownload: (): Promise<UpdateSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.updateDownload),
   updateInstall: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.updateInstall),
   cliInstall: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.cliInstall),
+  libraryExport: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.libraryExport),
+  libraryImport: (): Promise<LibraryImportResult | null> => ipcRenderer.invoke(IPC_CHANNELS.libraryImport),
   pushPlaybackState: (state: PlaybackState): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.playbackPushState, state),
   ackRemoteCommand: (commandId: string): Promise<void> =>

@@ -550,6 +550,24 @@ async function handleRequest(
       }
     }
 
+    // GET /export — 歌单与收藏备份（JSON）
+    if (method === 'GET' && path === '/export') {
+      return jsonReply(res, 200, ctx.library.exportUserData())
+    }
+
+    // POST /import — body 为导出的备份 JSON
+    if (method === 'POST' && path === '/import') {
+      const body = (await readJsonBody(req)) as Record<string, unknown> | null
+      if (!body || !Array.isArray(body.playlists) || !Array.isArray(body.favorites)) {
+        return jsonReply(res, 400, { error: '无效的备份文件。' })
+      }
+      try {
+        return jsonReply(res, 200, ctx.library.importUserData(body as never))
+      } catch (error) {
+        return jsonReply(res, 400, { error: error instanceof Error ? error.message : 'Import failed' })
+      }
+    }
+
     // GET /history?limit=20
     if (method === 'GET' && path === '/history') {
       const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '20', 10) || 20, 500)

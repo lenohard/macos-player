@@ -164,7 +164,7 @@ export default function App() {
   const [webdavRoots, setWebdavRoots] = useState<LibraryRootInfo[]>([])
   const [isWebdavBusy, setIsWebdavBusy] = useState(false)
   const [webdavPanel, setWebdavPanel] = useState<CloudPanel>('browse')
-  const [settingsSection, setSettingsSection] = useState<'connections' | 'ai' | 'about'>('connections')
+  const [settingsSection, setSettingsSection] = useState<'connections' | 'backup' | 'ai' | 'about'>('connections')
   const [webdavConfigForm, setWebdavConfigForm] = useState({ url: '', username: '', password: '' })
   const [webdavImportName, setWebdavImportName] = useState('')
   const queueRowRef = useRef<HTMLButtonElement | null>(null)

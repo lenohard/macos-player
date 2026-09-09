@@ -2,8 +2,9 @@ import type { FormEvent } from 'react'
 import type { BaiduAuthStatus, UpdateSnapshot, WebDAVStatus } from '@shared/ipc'
 import AboutPanel from './AboutPanel'
 import AiSettings from './AiSettings'
+import BackupSettings from './BackupSettings'
 
-type SettingsSection = 'connections' | 'ai' | 'about'
+type SettingsSection = 'connections' | 'backup' | 'ai' | 'about'
 
 interface Props {
   section: SettingsSection
@@ -51,6 +52,12 @@ export default function SettingsPanel(props: Props) {
           onClick={() => props.onSectionChange('connections')}
         >
           连接
+        </button>
+        <button
+          className={props.section === 'backup' ? 'active' : ''}
+          onClick={() => props.onSectionChange('backup')}
+        >
+          备份
         </button>
         <button
           className={props.section === 'ai' ? 'active' : ''}
@@ -153,6 +160,8 @@ export default function SettingsPanel(props: Props) {
               </form>
             </section>
           </div>
+        ) : props.section === 'backup' ? (
+          <BackupSettings />
         ) : props.section === 'ai' ? (
           <AiSettings />
         ) : (
