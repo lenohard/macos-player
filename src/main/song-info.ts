@@ -7,6 +7,8 @@ import type { LibraryService, SongLyricsLine, SongMeta } from './library'
 // 服务地址和默认模型从 AiConfig 读取（用户可在 AI 设置页配置）。
 
 const AGENT_TIMEOUT_MS = 240_000
+// cwd 属于 pi-web 服务端，不能使用客户端本机路径；检索会话使用服务端临时目录。
+const PI_WEB_SESSION_CWD = '/tmp'
 type ConfigGetter = () => { piWebUrl: string; defaultModel: string; songInfoPrompt?: string }
 
 // 内置默认提示词：不限制搜索次数，明确最终单行 JSON 输出格式与字段要求（程序按此解析入库）。
@@ -239,7 +241,7 @@ class PiWebAgentClient {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          cwd: process.cwd(),
+          cwd: PI_WEB_SESSION_CWD,
           type: 'prompt',
           message,
           provider,
