@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import type { UpdateSnapshot } from '@shared/ipc'
+import ActionNotice, { problemHint } from './ActionNotice'
 
 function statusLabel(snapshot: UpdateSnapshot): string {
   switch (snapshot.status) {
@@ -15,7 +17,7 @@ function statusLabel(snapshot: UpdateSnapshot): string {
     case 'downloaded':
       return `已下载 ${snapshot.info?.version ?? ''}，可重启安装`
     case 'error':
-      return snapshot.error ?? '更新失败'
+      return '更新不可用'
     default:
       return ''
   }
@@ -24,26 +26,43 @@ function statusLabel(snapshot: UpdateSnapshot): string {
 interface AboutPanelProps {
   snapshot: UpdateSnapshot
   busy: boolean
-  cliBusy: boolean
-  cliInstalled: boolean
-  cliError: string | null
   onCheck(): void
   onDownload(): void
   onInstall(): void
-  onCliInstall(): void
 }
 
 export default function AboutPanel({
   snapshot,
   busy,
-  cliBusy,
-  cliInstalled,
-  cliError,
   onCheck,
   onDownload,
-  onInstall,
-  onCliInstall
+  onInstall
 }: AboutPanelProps) {
+  const [dismissedUpdate, setDismissedUpdate] = useState<UpdateSnapshot | null>(null)
+  const [cliBusy, setCliBusy] = useState(false)
+  const [cliInstalled, setCliInstalled] = useState(false)
+  const [cliNotice, setCliNotice] = useState<
+    { tone: 'error' | 'success'; title: string; message?: string } | null
+  >(null)
+
+  async function installCli(): Promise<void> {
+    setCliBusy(true)
+    setCliNotice(null)
+    try {
+      const installedPath = await window.api.cliInstall()
+      setCliInstalled(true)
+      setCliNotice({
+        tone: 'success',
+        title: '命令行已安装',
+        message: installedPath ? `已安装到 ${installedPath}` : '可在终端直接使用 corner 命令。'
+      })
+    } catch (installError) {
+      setCliNotice({ tone: 'error', title: '命令行安装失败', message: problemHint(installError) })
+    } finally {
+      setCliBusy(false)
+    }
+  }
+
   return (
     <div className="library-panel about-panel">
       <div className="about-heading">
@@ -68,9 +87,16 @@ export default function AboutPanel({
           <span>安装位置</span>
           <code>~/.local/bin/corner</code>
         </div>
-        {cliError && <p className="about-cli-error" role="alert">{cliError}</p>}
+        {cliNotice && (
+          <ActionNotice
+            tone={cliNotice.tone}
+            title={cliNotice.title}
+            message={cliNotice.message}
+            onDismiss={() => setCliNotice(null)}
+          />
+        )}
         <div className="about-cli-actions">
-          <button className="primary-button" onClick={onCliInstall} disabled={cliBusy}>
+          <button className="primary-button" onClick={() => void installCli()} disabled={cliBusy}>
             {cliBusy ? '安装中…' : cliInstalled ? '重新安装' : '安装命令行'}
           </button>
           <span className="about-cli-hint">无需 sudo，安装到当前用户目录</span>
@@ -78,9 +104,10 @@ export default function AboutPanel({
       </section>
 
       <div className="about-update">
-        <p className="about-status" role="status">
-          {statusLabel(snapshot)}
-        </p>
+        {snapshot.status === 'error' ? (
+          dismissedUpdate !== snapshot && <ActionNotice title="暂时无法更新" message="请检查网络连接，再检查一次更新。"
+            onDismiss={() => setDismissedUpdate(snapshot)} />
+        ) : <p className="about-status" role="status">{statusLabel(snapshot)}</p>}
         {snapshot.status === 'downloading' && snapshot.progress != null && (
           <div className="about-progress" aria-hidden="true">
             <div className="about-progress-fill" style={{ width: `${Math.min(100, snapshot.progress)}%` }} />

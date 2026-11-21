@@ -2,7 +2,6 @@ import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import {
-  app,
   BrowserWindow,
   net,
   safeStorage,
@@ -10,6 +9,7 @@ import {
 } from 'electron'
 import type { BaiduAuthStatus, CloudEntry } from '../shared/ipc'
 import { downloadResponseToFile, fetchWithElectronNet, isAsciiHeaderValue } from './media-net'
+import { getDataDir } from './data-path'
 
 interface BaiduConfig {
   clientId: string
@@ -176,14 +176,14 @@ export class BaiduService {
 
   async stream(path: string, request: Request): Promise<Response> {
     const range = request.headers.get('Range')
-    return this.fetchDownload(path, range)
+    return this.fetchDownload(path, range, request.signal)
   }
 
   async download(path: string, destination: string): Promise<void> {
     await downloadResponseToFile(await this.fetchDownload(path), destination)
   }
 
-  private async fetchDownload(path: string, range?: string | null): Promise<Response> {
+  private async fetchDownload(path: string, range?: string | null, signal?: AbortSignal): Promise<Response> {
     const token = await this.getValidToken()
     const url = new URL(DOWNLOAD_ENDPOINT)
     url.search = new URLSearchParams({
@@ -194,7 +194,7 @@ export class BaiduService {
 
     const headers: Record<string, string> = { 'User-Agent': 'pan.baidu.com' }
     if (range && isAsciiHeaderValue(range)) headers.Range = range
-    return fetchWithElectronNet(url.toString(), headers)
+    return fetchWithElectronNet(url.toString(), headers, signal)
   }
 
   private requireConfig(): BaiduConfig {
@@ -335,7 +335,7 @@ export class BaiduService {
   }
 
   private get tokenPath(): string {
-    return join(app.getPath('userData'), 'credentials', 'baidu-token.bin')
+    return join(getDataDir(), 'credentials', 'baidu-token.bin')
   }
 
   private loadToken(): BaiduToken | null {
@@ -346,7 +346,7 @@ export class BaiduService {
     try {
       return JSON.parse(safeStorage.decryptString(readFileSync(path))) as BaiduToken
     } catch {
-      rmSync(path, { force: true })
+      // Keychain failures must not remove the user's credential file.
       return null
     }
   }

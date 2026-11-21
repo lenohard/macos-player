@@ -1,4 +1,6 @@
-import type { FormEvent } from 'react'
+import { useState } from 'react'
+import ActionNotice from './ActionNotice'
+import AppDialog from './AppDialog'
 import type { BaiduAuthStatus, UpdateSnapshot, WebDAVStatus } from '@shared/ipc'
 import AboutPanel from './AboutPanel'
 import AiSettings from './AiSettings'
@@ -17,14 +19,10 @@ interface Props {
   webdavBusy: boolean
   webdavForm: { url: string; username: string; password: string }
   onWebdavFormChange: (form: { url: string; username: string; password: string }) => void
-  onWebdavSave: () => void
+  onWebdavSave: () => Promise<boolean>
   onWebdavDisconnect: () => void
   updateSnapshot: UpdateSnapshot
   updateBusy: boolean
-  cliBusy: boolean
-  cliInstalled: boolean
-  cliError: string | null
-  onCliInstall: () => void
   onUpdateCheck: () => void
   onUpdateDownload: () => void
   onUpdateInstall: () => void
@@ -39,33 +37,38 @@ function StatusBadge({ connected, pending = false }: { connected: boolean; pendi
 }
 
 export default function SettingsPanel(props: Props) {
-  const submitWebdav = (event: FormEvent): void => {
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false)
+  const [webdavFailed, setWebdavFailed] = useState(false)
+  const [webdavErrorDismissed, setWebdavErrorDismissed] = useState(false)
+  const submitWebdav = (event: React.FormEvent): void => {
     event.preventDefault()
-    props.onWebdavSave()
+    setWebdavErrorDismissed(false)
+    setWebdavFailed(false)
+    void props.onWebdavSave().then(connected => setWebdavFailed(!connected))
   }
 
   return (
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="设置分类">
-        <button
+        <button type="button" aria-current={props.section === 'connections' ? 'page' : undefined}
           className={props.section === 'connections' ? 'active' : ''}
           onClick={() => props.onSectionChange('connections')}
         >
           连接
         </button>
-        <button
+        <button type="button" aria-current={props.section === 'backup' ? 'page' : undefined}
           className={props.section === 'backup' ? 'active' : ''}
           onClick={() => props.onSectionChange('backup')}
         >
           备份
         </button>
-        <button
+        <button type="button" aria-current={props.section === 'ai' ? 'page' : undefined}
           className={props.section === 'ai' ? 'active' : ''}
           onClick={() => props.onSectionChange('ai')}
         >
           大模型
         </button>
-        <button
+        <button type="button" aria-current={props.section === 'about' ? 'page' : undefined}
           className={props.section === 'about' ? 'active' : ''}
           onClick={() => props.onSectionChange('about')}
         >
@@ -76,6 +79,7 @@ export default function SettingsPanel(props: Props) {
       <div className="settings-content">
         {props.section === 'connections' ? (
           <div className="settings-sections">
+            <>
             <section className="settings-section" aria-labelledby="baidu-settings-title">
               <div className="settings-section-header">
                 <div>
@@ -152,13 +156,18 @@ export default function SettingsPanel(props: Props) {
                     {props.webdavBusy ? '正在连接…' : props.webdavStatus?.configured ? '保存并重新连接' : '保存并连接'}
                   </button>
                   {props.webdavStatus?.configured && (
-                    <button className="quiet-button danger" type="button" onClick={props.onWebdavDisconnect} disabled={props.webdavBusy}>
+                    <button className="quiet-button danger" type="button" onClick={() => setConfirmDisconnect(true)} disabled={props.webdavBusy}>
                       断开并清除配置
                     </button>
                   )}
                 </div>
+                {webdavFailed && !webdavErrorDismissed && (
+                  <ActionNotice title="无法验证 WebDAV 连接" message="请核对服务器地址、登录凭据和网络，然后重新连接。"
+                    onDismiss={() => setWebdavErrorDismissed(true)} />
+                )}
               </form>
             </section>
+            </>
           </div>
         ) : props.section === 'backup' ? (
           <BackupSettings />
@@ -168,16 +177,26 @@ export default function SettingsPanel(props: Props) {
           <AboutPanel
             snapshot={props.updateSnapshot}
             busy={props.updateBusy}
-            cliBusy={props.cliBusy}
-            cliInstalled={props.cliInstalled}
-            cliError={props.cliError}
-            onCliInstall={props.onCliInstall}
             onCheck={props.onUpdateCheck}
             onDownload={props.onUpdateDownload}
             onInstall={props.onUpdateInstall}
           />
         )}
       </div>
+      {confirmDisconnect && (
+        <AppDialog compact title="断开 WebDAV？" onClose={() => setConfirmDisconnect(false)} footer={
+          <>
+            <button type="button" className="quiet-button" autoFocus onClick={() => setConfirmDisconnect(false)}>保留连接</button>
+            <button type="button" className="quiet-button danger" onClick={() => {
+              setConfirmDisconnect(false)
+              setWebdavFailed(false)
+              props.onWebdavDisconnect()
+            }}>断开连接</button>
+          </>
+        }>
+          <p>本机保存的连接配置将被清除，网盘上的文件不会被删除。</p>
+        </AppDialog>
+      )}
     </div>
   )
 }

@@ -1,5 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { PlaylistSummary, Track } from '@shared/ipc'
+
+export interface PlayerBarHandle {
+  /** Start a selected track synchronously in the user's click handler (iOS Safari). */
+  play(track: Track): void
+  /** Desktop CLI transport command: toggle play/pause. */
+  togglePlay(): void
+  /** Desktop CLI transport command: set output volume (0..1). */
+  setVolume(value: number): void
+  /** Desktop CLI transport command: seek to an absolute position (seconds). */
+  seek(positionSec: number): void
+}
 
 interface PlayerBarProps {
   tracks: Track[]
@@ -10,9 +21,6 @@ interface PlayerBarProps {
   shuffle: boolean
   repeatMode: 'off' | 'all' | 'one'
   playlists: PlaylistSummary[]
-  remoteTogglePlay: number
-  remoteVolume: { seq: number; value: number }
-  remoteSeek: { seq: number; value: number }
   onPlayingChange(playing: boolean): void
   onVolumeChange(volume: number): void
   onPositionChange(positionSec: number, durationSec: number): void
@@ -46,7 +54,7 @@ function formatTime(seconds: number): string {
   return `${minutes}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`
 }
 
-export default function PlayerBar({
+const PlayerBar = forwardRef<PlayerBarHandle, PlayerBarProps>(function PlayerBar({
   tracks,
   currentIndex,
   currentTrack,
@@ -55,9 +63,6 @@ export default function PlayerBar({
   shuffle,
   repeatMode,
   playlists,
-  remoteTogglePlay,
-  remoteVolume,
-  remoteSeek,
   onPlayingChange,
   onVolumeChange,
   onPositionChange,
@@ -70,14 +75,46 @@ export default function PlayerBar({
   isFavorite,
   onToggleFavorite,
   onOpenDetail
-}: PlayerBarProps) {
+}: PlayerBarProps, ref) {
   const audioRef = useRef<HTMLAudioElement>(null)
+  const explicitTrackRef = useRef<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [volume, setVolume] = useState(0.8)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const [showPlaylistMenu, setShowPlaylistMenu] = useState(false)
+
+  useImperativeHandle(ref, () => ({
+    play(track) {
+      const audio = audioRef.current
+      if (!audio) return
+      explicitTrackRef.current = track.id
+      setPlaybackError(null)
+      setCurrentTime(0)
+      setDuration(0)
+      audio.src = track.playbackUrl
+      audio.load()
+      void audio.play().catch(() => {
+        setIsPlaying(false)
+        setPlaybackError('无法播放此文件')
+      })
+    },
+    // toggleRef 每次渲染指向最新的 togglePlayback；handle 只在 layout 阶段创建一次。
+    togglePlay() {
+      void toggleRef.current()
+    },
+    setVolume(value) {
+      setVolume(Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0)))
+    },
+    seek(positionSec) {
+      const audio = audioRef.current
+      if (!audio || !Number.isFinite(positionSec)) return
+      const target = Math.max(0, positionSec)
+      audio.currentTime = target
+      setCurrentTime(target)
+    }
+  }), [])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -93,12 +130,16 @@ export default function PlayerBar({
       return
     }
 
+    const explicitlyStarted = explicitTrackRef.current === currentTrack.id
+    explicitTrackRef.current = null
     setPlaybackError(null)
-    setCurrentTime(0)
-    setDuration(0)
-    audio.src = currentTrack.playbackUrl
-    audio.load()
-    if (playbackRequest > 0) {
+    if (!explicitlyStarted) {
+      setCurrentTime(0)
+      setDuration(0)
+      audio.src = currentTrack.playbackUrl
+      audio.load()
+    }
+    if (playbackRequest > 0 && audio.paused) {
       void audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false))
     }
   }, [currentTrack, playbackRequest])
@@ -108,34 +149,16 @@ export default function PlayerBar({
     onVolumeChange(volume)
   }, [volume, onVolumeChange])
 
-  // Remote volume command from CLI
-  useEffect(() => {
-    if (remoteVolume.seq === 0) return
-    setVolume(remoteVolume.value)
-  }, [remoteVolume.seq, remoteVolume.value])
-
-  // Remote seek command from CLI
-  useEffect(() => {
-    if (remoteSeek.seq === 0) return
-    const audio = audioRef.current
-    if (!audio || !currentTrack) return
-    audio.currentTime = remoteSeek.value
-    setCurrentTime(remoteSeek.value)
-  }, [remoteSeek.seq, remoteSeek.value, currentTrack])
-
-  // Remote toggle play from CLI
   const toggleRef = useRef(togglePlayback)
   toggleRef.current = togglePlayback
-  useEffect(() => {
-    if (remoteTogglePlay > 0) void toggleRef.current()
-  }, [remoteTogglePlay])
 
   // 窗口在前台时，空格键全局切换播放/暂停（输入框内不劫持）
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.code !== 'Space' || event.repeat) return
       if (event.metaKey || event.ctrlKey || event.altKey) return
-      if (isTextInput(event.target)) return
+      if (isTextInput(event.target) || (event.target instanceof HTMLElement &&
+          event.target.closest('dialog, button, a[href], summary, [role="button"], [role="tab"]'))) return
       event.preventDefault()
       event.stopPropagation()
       void toggleRef.current()
@@ -371,4 +394,6 @@ export default function PlayerBar({
       </div>
     </footer>
   )
-}
+})
+
+export default PlayerBar

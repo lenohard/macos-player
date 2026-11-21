@@ -1,8 +1,8 @@
 import { DatabaseSync } from 'node:sqlite'
-import { app } from 'electron'
 import { join } from 'path'
+import { getDataDir } from './data-path'
 
-const SCHEMA_VERSION = 4
+const SCHEMA_VERSION = 6
 
 const MIGRATION_V1 = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -118,6 +118,44 @@ CREATE INDEX IF NOT EXISTS idx_song_meta_title
   ON song_meta(title COLLATE NOCASE);
 `
 
+const MIGRATION_V5 = `
+CREATE TABLE IF NOT EXISTS song_info_tasks (
+  id TEXT PRIMARY KEY,
+  track_id TEXT,
+  prompt TEXT NOT NULL,
+  path TEXT NOT NULL,
+  title TEXT NOT NULL,
+  artist TEXT,
+  source TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  tool_call_count INTEGER NOT NULL DEFAULT 0,
+  current_tool TEXT,
+  message TEXT,
+  result_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_song_info_tasks_running
+  ON song_info_tasks(track_id, started_at DESC)
+  WHERE status = 'running';
+
+CREATE INDEX IF NOT EXISTS idx_song_info_tasks_finished
+  ON song_info_tasks(finished_at DESC)
+  WHERE status != 'running';
+`
+
+const MIGRATION_V6 = `
+ALTER TABLE tracks ADD COLUMN album TEXT;
+ALTER TABLE tracks ADD COLUMN cover_url TEXT;
+ALTER TABLE tracks ADD COLUMN mb_recording_id TEXT;
+ALTER TABLE tracks ADD COLUMN mb_release_id TEXT;
+ALTER TABLE tracks ADD COLUMN mb_artist_id TEXT;
+ALTER TABLE tracks ADD COLUMN mb_score INTEGER;
+ALTER TABLE tracks ADD COLUMN mb_identified_at INTEGER;
+`
+
 function migrate(db: DatabaseSync): void {
   const hasMeta = db.prepare(`
     SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'
@@ -150,6 +188,12 @@ function migrate(db: DatabaseSync): void {
     if (currentVersion < 4) {
       db.exec(MIGRATION_V4)
     }
+    if (currentVersion < 5) {
+      db.exec(MIGRATION_V5)
+    }
+    if (currentVersion < 6) {
+      db.exec(MIGRATION_V6)
+    }
     db.prepare('UPDATE schema_meta SET version = ?').run(SCHEMA_VERSION)
     db.exec('COMMIT')
   } catch (error) {
@@ -159,7 +203,7 @@ function migrate(db: DatabaseSync): void {
 }
 
 export function openLibraryDatabase(): DatabaseSync {
-  const dbPath = join(app.getPath('userData'), 'library.sqlite')
+  const dbPath = join(getDataDir(), 'library.sqlite')
   const db = new DatabaseSync(dbPath)
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')

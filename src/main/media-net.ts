@@ -33,10 +33,15 @@ export async function downloadResponseToFile(response: Response, destination: st
 
 export function fetchWithElectronNet(
   url: string,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  signal?: AbortSignal
 ): Promise<Response> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason)
     const req = net.request({ url, method: 'GET', headers })
+    const abort = (): void => { req.abort(); reject(signal?.reason) }
+    signal?.addEventListener('abort', abort, { once: true })
+    req.once('close', () => signal?.removeEventListener('abort', abort))
     req.on('response', res => {
       const outHeaders = new Headers()
       for (const key of Object.keys(res.headers)) {
@@ -58,6 +63,7 @@ export function fetchWithElectronNet(
           })
           res.on('end', () => controller.close())
           res.on('error', (err: Error) => controller.error(err))
+          res.on('aborted', () => controller.error(new Error('Audio request aborted')))
         },
         cancel() {
           req.abort()

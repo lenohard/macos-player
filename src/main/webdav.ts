@@ -1,10 +1,11 @@
-import { app, net, safeStorage } from 'electron'
+import { net, safeStorage } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import type { CloudEntry, WebDAVConfig, WebDAVStatus } from '../shared/ipc'
 import { downloadResponseToFile } from './media-net'
+import { getDataDir } from './data-path'
 
-const configPath = () => join(app.getPath('userData'), 'credentials', 'webdav.bin')
+const configPath = () => join(getDataDir(), 'credentials', 'webdav.bin')
 let config: WebDAVConfig | null = null
 function load(): WebDAVConfig | null {
   if (config) return config
@@ -58,7 +59,7 @@ export class WebDAVService {
     const password = next.password || previous?.password || ''
     config = { url, username: next.username.trim(), password }
     const text = JSON.stringify(config); const raw = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(text) : Buffer.from(text)
-    mkdirSync(join(app.getPath('userData'), 'credentials'), { recursive: true }); writeFileSync(configPath(), raw)
+    mkdirSync(join(getDataDir(), 'credentials'), { recursive: true }); writeFileSync(configPath(), raw)
     return this.getStatus()
   }
   disconnect(): WebDAVStatus {
@@ -66,12 +67,12 @@ export class WebDAVService {
     try { writeFileSync(configPath(), Buffer.from('')) } catch { /* config may not exist yet */ }
     return this.getStatus()
   }
-  async request(path: string, method: string, extra?: HeadersInit): Promise<Response> {
+  async request(path: string, method: string, extra?: HeadersInit, signal?: AbortSignal): Promise<Response> {
     if (!load()?.url) throw new Error('请先配置 WebDAV。')
     const h = headers()
     if (method === 'PROPFIND') h.set('Depth', '1')
     Object.entries(extra || {}).forEach(([k,v]) => h.set(k, String(v)))
-    const response = await net.fetch(joinPath(path), { method, headers: h })
+    const response = await net.fetch(joinPath(path), { method, headers: h, signal })
     // 207 = multistatus (PROPFIND), 416 = range not satisfiable (media seek); both are valid responses.
     if (!response.ok && response.status !== 207 && response.status !== 416) {
       throw new Error(`WebDAV 请求失败 (${response.status})`)
@@ -94,8 +95,8 @@ export class WebDAVService {
     return result
   }
   async stream(path: string, request: Request): Promise<Response> {
-    const range = request.headers.get('Range'); const response = await this.request(path, 'GET', range ? { Range: range } : undefined)
-    return response
+    const range = request.headers.get('Range')
+    return this.request(path, 'GET', range ? { Range: range } : undefined, request.signal)
   }
   async download(path: string, destination: string): Promise<void> {
     await downloadResponseToFile(await this.request(path, 'GET'), destination)

@@ -1,9 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC_CHANNELS,
+  LIBRARY_CHANGED_CHANNEL,
   OPEN_SETTINGS_CHANNEL,
   PLAYBACK_REMOTE_COMMAND_CHANNEL,
-  SONG_INFO_EVENT_CHANNEL,
+  SONG_INFO_TASKS_CHANGED_CHANNEL,
   SYNC_PROGRESS_CHANNEL,
   UPDATE_STATUS_CHANNEL,
   type AiConfig,
@@ -17,8 +18,9 @@ import {
   type IPCApi,
   type LibraryImportResult,
   type RemoteCommand,
-  type SongInfoEvent,
   type SongInfoMeta,
+  type SongInfoTask,
+  type MusicBrainzLookupResult,
   type TrackDownloadResult,
   type LibraryRootInfo,
   type LibrarySource,
@@ -30,6 +32,7 @@ import {
   type TrackContextMenuAction,
   type TrackContextMenuRequest,
   type TrackDetail,
+  type TrackIdentification,
   type TracksPage,
   type UpdateSnapshot,
   type WebDAVConfig,
@@ -43,8 +46,9 @@ const api: IPCApi = {
   getSources: (): Promise<LibrarySource[]> => ipcRenderer.invoke(IPC_CHANNELS.getSources),
   listTracks: (sourceId: string): Promise<Track[]> =>
     ipcRenderer.invoke(IPC_CHANNELS.listTracks, sourceId),
-  listTracksPage: (sourceId: string, offset: number, limit: number, search?: string): Promise<TracksPage> =>
-    ipcRenderer.invoke(IPC_CHANNELS.listTracksPage, sourceId, offset, limit, search),
+  listTracksPage: (sourceId: string, offset: number, limit: number, search?: string,
+    identified?: 'all' | 'identified' | 'unidentified'): Promise<TracksPage> =>
+    ipcRenderer.invoke(IPC_CHANNELS.listTracksPage, sourceId, offset, limit, search, identified),
   trackGetDetail: (id: string): Promise<TrackDetail | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.trackGetDetail, id),
   openLocalTracks: (): Promise<Track[]> => ipcRenderer.invoke(IPC_CHANNELS.openLocalTracks),
@@ -77,6 +81,11 @@ const api: IPCApi = {
     ipcRenderer.on(SYNC_PROGRESS_CHANNEL, handler)
     return () => ipcRenderer.removeListener(SYNC_PROGRESS_CHANNEL, handler)
   },
+  onLibraryChanged: (listener: () => void) => {
+    const handler = () => listener()
+    ipcRenderer.on(LIBRARY_CHANGED_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(LIBRARY_CHANGED_CHANNEL, handler)
+  },
   playlistList: (): Promise<PlaylistSummary[]> => ipcRenderer.invoke(IPC_CHANNELS.playlistList),
   playlistCreate: (name: string): Promise<PlaylistSummary> =>
     ipcRenderer.invoke(IPC_CHANNELS.playlistCreate, name),
@@ -104,6 +113,8 @@ const api: IPCApi = {
     ipcRenderer.invoke(IPC_CHANNELS.playbackPushState, state),
   ackRemoteCommand: (commandId: string): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.playbackAckCommand, commandId),
+  markRemotePlaybackReady: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.playbackRemoteReady),
   trackContextMenu: (request: TrackContextMenuRequest): Promise<TrackContextMenuAction | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.trackContextMenu, request),
   onOpenSettings: (listener: () => void) => {
@@ -120,18 +131,33 @@ const api: IPCApi = {
     ipcRenderer.invoke(IPC_CHANNELS.songInfoGet, identifier),
   songInfoLookup: (trackId: string): Promise<{ requestId: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.songInfoLookup, trackId),
+  songInfoListTasks: (): Promise<SongInfoTask[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.songInfoListTasks),
+  songInfoGetTaskResult: (id: string): Promise<SongInfoMeta | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.songInfoGetTaskResult, id),
+  songInfoCancelTask: (id: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.songInfoCancelTask, id),
+  songInfoRetryTask: (id: string): Promise<{ requestId: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.songInfoRetryTask, id),
+  songInfoDeleteTask: (id: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.songInfoDeleteTask, id),
+  onSongInfoTasksChanged: (listener: () => void) => {
+    const handler = (): void => listener()
+    ipcRenderer.on(SONG_INFO_TASKS_CHANGED_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(SONG_INFO_TASKS_CHANGED_CHANNEL, handler)
+  },
   trackDownload: (trackId: string, dest?: string): Promise<TrackDownloadResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.trackDownload, trackId, dest),
-  onSongInfoEvent: (listener: (event: SongInfoEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, event: SongInfoEvent) => listener(event)
-    ipcRenderer.on(SONG_INFO_EVENT_CHANNEL, handler)
-    return () => ipcRenderer.removeListener(SONG_INFO_EVENT_CHANNEL, handler)
-  },
+  musicBrainzLookup: (trackId: string): Promise<MusicBrainzLookupResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.musicBrainzLookup, trackId),
+  trackApplyIdentification: (trackId: string, identification: TrackIdentification): Promise<TrackDetail> =>
+    ipcRenderer.invoke(IPC_CHANNELS.trackApplyIdentification, trackId, identification),
   aiGetConfig: (): Promise<AiConfig> => ipcRenderer.invoke(IPC_CHANNELS.aiGetConfig),
 
   aiSaveConfig: (config: AiConfig): Promise<AiConfig> =>
     ipcRenderer.invoke(IPC_CHANNELS.aiSaveConfig, config),
-  aiFetchModels: (): Promise<AiModelInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.aiFetchModels),
+  aiFetchModels: (piWebUrl?: string): Promise<AiModelInfo[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.aiFetchModels, piWebUrl),
   aiTestConnection: (): Promise<AiTestResult> => ipcRenderer.invoke(IPC_CHANNELS.aiTestConnection),
   onRemoteCommand: (listener: (command: RemoteCommand) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, command: RemoteCommand) => listener(command)

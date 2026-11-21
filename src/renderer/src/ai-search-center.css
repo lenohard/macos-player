@@ -1,0 +1,753 @@
+.ai-search-center {
+  --ai-success: #218653;
+  --ai-danger: #c43d3d;
+  --ai-warning: #9a610d;
+  container-type: inline-size;
+  width: 100%;
+  max-width: 980px;
+  min-width: 0;
+  margin: 0 auto;
+  color: var(--text);
+}
+
+.ai-search-center .quiet-button,
+.ai-search-center .primary-button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.ai-center-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.ai-center-tabs {
+  display: inline-flex;
+  min-width: 0;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.ai-center-tabs > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 29px;
+  padding: 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
+  border-radius: 6px;
+  transition: color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.ai-center-tabs > button:hover {
+  color: var(--text);
+}
+
+.ai-center-tabs > button.active {
+  color: var(--text);
+  background: var(--surface-solid);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.09);
+}
+
+.ai-center-tabs > button > span {
+  min-width: 18px;
+  padding: 1px 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  border-radius: 999px;
+}
+
+.ai-center-tabs > button.active > span {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.ai-refresh-button {
+  flex: 0 0 auto;
+}
+
+.ai-refresh-button svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.ai-refresh-button svg.is-spinning {
+  animation: ai-center-spin 900ms linear infinite;
+}
+
+.ai-center-notice {
+  margin-bottom: 10px;
+}
+
+.ai-initial-notice {
+  margin-top: 8px;
+}
+
+.ai-history-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.ai-history-search {
+  width: 100%;
+  max-width: none;
+}
+
+.ai-history-filters select {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 26px 0 10px;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ai-history-filters select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ai-history-search .search-field-icon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.5;
+}
+
+.ai-center-panel {
+  min-width: 0;
+}
+
+.ai-task-list {
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.ai-task-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 108px auto;
+  grid-template-areas: 'copy timing actions';
+  gap: 14px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  transition: background 120ms ease;
+}
+
+.ai-task-row:last-child {
+  border-bottom: 0;
+}
+
+.ai-task-row:hover {
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+.ai-task-row.ai-task-running {
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+.ai-task-copy {
+  grid-area: copy;
+  min-width: 0;
+}
+
+.ai-task-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ai-task-title-line > strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-status-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 20px;
+  padding: 1px 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  border-radius: 999px;
+}
+
+.ai-status-running {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.ai-status-succeeded {
+  color: var(--ai-success);
+  background: color-mix(in srgb, var(--ai-success) 12%, transparent);
+}
+
+.ai-status-not_found,
+.ai-status-interrupted {
+  color: var(--ai-warning);
+  background: color-mix(in srgb, var(--ai-warning) 12%, transparent);
+}
+
+.ai-status-failed {
+  color: var(--ai-danger);
+  background: color-mix(in srgb, var(--ai-danger) 10%, transparent);
+}
+
+.ai-task-byline,
+.ai-task-message {
+  min-width: 0;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-task-byline {
+  display: flex;
+  gap: 5px;
+}
+
+.ai-task-byline > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-task-byline > span[aria-hidden='true'] {
+  flex: 0 0 auto;
+}
+
+.ai-task-message {
+  color: var(--faint);
+}
+
+.ai-task-running .ai-task-message {
+  color: var(--muted);
+}
+
+.ai-task-timing {
+  display: flex;
+  grid-area: timing;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+.ai-task-timing > span:first-child {
+  color: var(--text);
+}
+
+.ai-task-timing > time {
+  color: var(--faint);
+}
+
+.ai-task-actions {
+  display: flex;
+  grid-area: actions;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+
+.ai-task-actions .quiet-button {
+  min-height: 28px;
+  padding: 0 9px;
+  background: var(--surface-solid);
+}
+
+.ai-search-center .ai-danger-action {
+  color: var(--ai-danger);
+}
+
+.ai-search-center .ai-danger-action:hover {
+  background: color-mix(in srgb, var(--ai-danger) 9%, var(--surface-solid));
+}
+
+.ai-task-progress {
+  position: relative;
+  height: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+  background: var(--accent-soft);
+  border-radius: 2px;
+}
+
+.ai-task-progress::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 38%;
+  content: '';
+  background: var(--accent);
+  border-radius: inherit;
+  animation: ai-center-progress 1.5s ease-in-out infinite;
+}
+
+.ai-mini-spinner {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: ai-center-spin 800ms linear infinite;
+}
+
+.ai-spinner {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+  border: 2px solid var(--accent-soft);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: ai-center-spin 800ms linear infinite;
+}
+
+.ai-center-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 216px;
+  padding: 34px 20px;
+  color: var(--muted);
+  text-align: center;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.ai-center-state > .ai-spinner {
+  margin-bottom: 14px;
+}
+
+.ai-state-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 14px;
+  color: var(--accent);
+  font-size: 23px;
+  background: var(--accent-soft);
+  border-radius: 13px;
+}
+
+.ai-center-state h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.1px;
+}
+
+.ai-center-state p {
+  max-width: 410px;
+  margin: 7px 0 14px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.ai-center-state > .ai-spinner + h2 + p {
+  margin-bottom: 0;
+}
+
+.ai-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+}
+
+.ai-history-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 2px 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-history-footer > div {
+  display: flex;
+  gap: 6px;
+}
+
+.ai-history-footer .quiet-button {
+  min-height: 27px;
+}
+
+.ai-dialog-context {
+  margin-bottom: 14px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-dialog-message {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--accent-soft);
+  border-radius: 8px;
+}
+
+.ai-task-detail-list {
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+
+.ai-task-detail-list > div {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  min-height: 42px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-task-detail-list dt {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.ai-task-detail-list dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ai-dialog-progress {
+  height: 3px;
+  margin-top: 16px;
+}
+
+.ai-dialog-result-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.ai-dialog-result-state > .ai-spinner {
+  margin-bottom: 12px;
+}
+
+.ai-dialog-result-state h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.ai-dialog-result-state p {
+  max-width: 360px;
+  margin: 7px 0 14px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.ai-confirm-copy {
+  color: var(--muted);
+}
+
+.ai-confirm-copy > strong,
+.ai-confirm-copy > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-confirm-copy > strong {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.ai-confirm-copy > span {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.ai-confirm-copy > p {
+  margin: 16px 0 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.song-info-result {
+  min-width: 0;
+  color: var(--text);
+}
+
+.song-info-result-intro {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.song-info-result-section {
+  margin-top: 22px;
+}
+
+.song-info-result-section > h3 {
+  margin: 0 0 9px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.song-info-result-lyrics {
+  margin: 0;
+  padding: 13px 14px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.85;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface-solid));
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.song-info-result-lyrics.bilingual .song-info-result-lyric-line {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 11px;
+}
+
+.song-info-result-lyrics.bilingual .song-info-result-lyric-line:last-child {
+  margin-bottom: 0;
+}
+
+.song-info-result-lyric-line > span {
+  display: block;
+}
+
+.song-info-result-lyric-line > .translated {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.song-info-result-empty {
+  margin: 0;
+  padding: 30px 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.song-info-result-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  margin-top: 18px;
+  padding-top: 12px;
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.5;
+  border-top: 1px solid var(--border);
+}
+
+.song-info-result-source {
+  margin-left: auto;
+  overflow-wrap: anywhere;
+}
+
+.song-info-result-missing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 250px;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.song-info-result-missing-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 14px;
+  color: var(--accent);
+  font-size: 24px;
+  background: var(--accent-soft);
+  border-radius: 14px;
+}
+
+.song-info-result-missing > h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.song-info-result-missing > p {
+  max-width: 380px;
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+@container (max-width: 800px) {
+  .ai-task-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'copy timing'
+      'actions actions';
+    gap: 9px 12px;
+  }
+
+  .ai-task-timing {
+    align-items: flex-end;
+    text-align: right;
+  }
+
+  .ai-task-actions {
+    justify-content: flex-start;
+  }
+}
+
+@container (max-width: 470px) {
+  .ai-center-toolbar {
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .ai-center-tabs {
+    flex: 1 1 auto;
+  }
+
+  .ai-center-tabs > button {
+    flex: 1 1 0;
+    padding: 0 8px;
+  }
+
+  .ai-refresh-button {
+    padding: 0 8px !important;
+  }
+
+  .ai-history-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-task-row {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'copy' 'timing' 'actions';
+  }
+
+  .ai-task-timing {
+    flex-flow: row wrap;
+    align-items: center;
+    gap: 3px 10px;
+    text-align: left;
+  }
+
+  .ai-history-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .ai-search-center {
+    --ai-success: #62c58d;
+    --ai-danger: #ff8589;
+    --ai-warning: #e4b168;
+  }
+
+  .ai-center-tabs > button.active {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.24);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-search-center *,
+  .song-info-result * {
+    scroll-behavior: auto !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+@keyframes ai-center-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes ai-center-progress {
+  0% { transform: translateX(-105%); }
+  55%, 100% { transform: translateX(270%); }
+}

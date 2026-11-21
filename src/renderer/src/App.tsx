@@ -16,7 +16,12 @@ import type {
   UpdateSnapshot,
   WebDAVStatus
 } from '@shared/ipc'
-import PlayerBar from './PlayerBar'
+import ActionNotice, { ErrorToast, problemHint } from './ActionNotice'
+import AiSearchCenter from './AiSearchCenter'
+import AiTrackPicker from './AiTrackPicker'
+import AppDialog from './AppDialog'
+import useSongInfoTasks from './useSongInfoTasks'
+import PlayerBar, { type PlayerBarHandle } from './PlayerBar'
 import SearchField from './SearchField'
 import SettingsPanel from './SettingsPanel'
 import SyncResultPanel from './SyncResultPanel'
@@ -66,10 +71,17 @@ function formatDuration(seconds: number | null): string {
   return `${minutes}:${remaining.toString().padStart(2, '0')}`
 }
 
-function messageFrom(error: unknown, fallback: string): string {
-  if (!(error instanceof Error)) return fallback
-  return error.message.replace(/^Error invoking remote method '[^']+': Error: /, '') || fallback
+type Problem = { title: string; message?: string }
+
+function messageFrom(error: unknown, title: string): Problem {
+  const text = error instanceof Error ? error.message : ''
+  const message = text.includes('不能删除') && text.includes('关联歌单')
+    ? '这个歌单与已导入的音乐库关联，不能直接删除。'
+    : problemHint(error)
+  return { title, message }
 }
+
+const SETTINGS_TITLES = { connections: '连接', backup: '备份与恢复', ai: '大模型', about: '关于 corner' } as const
 
 function pickRandomTracks(source: Track[], count: number): Track[] {
   if (source.length <= count) return [...source]
@@ -111,6 +123,7 @@ type MainView =
   | { kind: 'playlist'; playlistId: string }
   | { kind: 'queue' }
   | { kind: 'favorites' }
+  | { kind: 'ai'; history?: boolean }
   | { kind: 'settings' }
   | { kind: 'trackDetail'; trackId: string; returnTo: MainView }
 
@@ -124,6 +137,7 @@ export default function App() {
   const [libraryTotal, setLibraryTotal] = useState(0)
   const [libraryOffset, setLibraryOffset] = useState(0)
   const [librarySearch, setLibrarySearch] = useState('')
+  const [identifiedFilter, setIdentifiedFilter] = useState<'all' | 'identified' | 'unidentified'>('all')
   const [playlistSearch, setPlaylistSearch] = useState('')
   const [playlistTracks, setPlaylistTracks] = useState<Track[]>([])
   const [favoriteTracks, setFavoriteTracks] = useState<Track[]>([])
@@ -136,16 +150,30 @@ export default function App() {
   const [detailTrack, setDetailTrack] = useState<Track | null>(null)
   const [playbackRequest, setPlaybackRequest] = useState(0)
   const [queueHydrated, setQueueHydrated] = useState(false)
+  const playerBarRef = useRef<PlayerBarHandle>(null)
   const queuePersistenceReady = useRef(false)
   const librarySearchRef = useRef('')
-  const cloudSourceRef = useRef<'baidu' | 'quark' | 'all'>('baidu')
+  const identifiedFilterRef = useRef<'all' | 'identified' | 'unidentified'>('all')
+  const cloudSourceRef = useRef<'baidu' | 'quark' | 'all' | 'local'>('baidu')
   const libraryRequestSeq = useRef(0)
   const playlistRequestSeq = useRef(0)
   const baiduDirSeq = useRef(0)
   const webdavDirSeq = useRef(0)
   const queueSaveChain = useRef<Promise<void>>(Promise.resolve())
   const [isChoosing, setIsChoosing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<Problem | null>(null)
+  const dismissError = useCallback(() => setError(null), [])
+  const [baiduDirectoryError, setBaiduDirectoryError] = useState<(Problem & { path: string }) | null>(null)
+  const [webdavDirectoryError, setWebdavDirectoryError] = useState<(Problem & { path: string }) | null>(null)
+  const [playlistToDelete, setPlaylistToDelete] = useState<Pick<PlaylistSummary, 'id' | 'name'> | null>(null)
+  const [renameDraft, setRenameDraft] = useState<{ id: string; original: string; name: string } | null>(null)
+  const [renaming, setRenaming] = useState(false)
+  const [renameFailed, setRenameFailed] = useState(false)
+  const [showTrackPicker, setShowTrackPicker] = useState(false)
+  const [aiRunningView, setAiRunningView] = useState(0)
+  const { tasks: aiTasks, loading: aiLoading, loadError: aiLoadError, refresh: refreshAiTasks } = useSongInfoTasks()
+  const runningAiTasks = useMemo(() => aiTasks.filter(task => task.status === 'running'), [aiTasks])
+  const runningAiIds = useMemo(() => new Set(runningAiTasks.flatMap(task => task.trackId ? [task.trackId] : [])), [runningAiTasks])
   const [baiduStatus, setBaiduStatus] = useState<BaiduAuthStatus | null>(null)
   const [baiduEntries, setBaiduEntries] = useState<CloudEntry[]>([])
   const [baiduPath, setBaiduPath] = useState('/')
@@ -153,6 +181,7 @@ export default function App() {
   const [isBaiduBusy, setIsBaiduBusy] = useState(false)
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null)
   const [lastSyncResult, setLastSyncResult] = useState<BaiduImportResult | null>(null)
+  const [showSyncResult, setShowSyncResult] = useState(false)
   const [allTracksTotal, setAllTracksTotal] = useState(0)
   const [playlists, setPlaylists] = useState<PlaylistSummary[]>([])
   const [newPlaylistName, setNewPlaylistName] = useState('')
@@ -168,16 +197,10 @@ export default function App() {
   const [webdavConfigForm, setWebdavConfigForm] = useState({ url: '', username: '', password: '' })
   const [webdavImportName, setWebdavImportName] = useState('')
   const queueRowRef = useRef<HTMLButtonElement | null>(null)
-  const [remoteTogglePlay, setRemoteTogglePlay] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [volume, setVolume] = useState(0.8)
   const [positionSec, setPositionSec] = useState(0)
   const [durationSec, setDurationSec] = useState(0)
-  const [remoteVolume, setRemoteVolume] = useState({ seq: 0, value: 0.8 })
-  const [remoteSeek, setRemoteSeek] = useState({ seq: 0, value: 0 })
-  const [cliInstallBusy, setCliInstallBusy] = useState(false)
-  const [cliInstalled, setCliInstalled] = useState(false)
-  const [cliInstallError, setCliInstallError] = useState<string | null>(null)
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot>({
     appVersion: '…',
     enabled: false,
@@ -196,6 +219,10 @@ export default function App() {
   useEffect(() => {
     librarySearchRef.current = librarySearch
   }, [librarySearch])
+
+  useEffect(() => {
+    identifiedFilterRef.current = identifiedFilter
+  }, [identifiedFilter])
 
   const refreshPlaylists = useCallback(async (): Promise<void> => {
     try {
@@ -226,15 +253,23 @@ export default function App() {
     const seq = ++libraryRequestSeq.current
     const query = (search ?? librarySearchRef.current).trim()
     try {
-      const page = await window.api.listTracksPage(sourceId, offset, PAGE_SIZE, query || undefined)
+      const page = await window.api.listTracksPage(sourceId, offset, PAGE_SIZE, query || undefined,
+        identifiedFilterRef.current)
       if (seq !== libraryRequestSeq.current) return
       setLibraryTracks(page.tracks)
       setLibraryTotal(page.total)
       setLibraryOffset(page.offset)
     } catch {
-      if (seq === libraryRequestSeq.current) setError('无法载入音乐索引')
+      if (seq === libraryRequestSeq.current) setError({ title: '无法载入音乐索引' })
     }
   }, [])
+
+  const changeIdentifiedFilter = useCallback((next: 'all' | 'identified' | 'unidentified'): void => {
+    identifiedFilterRef.current = next
+    setIdentifiedFilter(next)
+    setLibraryOffset(0)
+    void loadLibraryPage(cloudSourceRef.current, 0)
+  }, [loadLibraryPage])
 
   const runLibrarySearch = useCallback(
     (query: string): void => {
@@ -246,7 +281,7 @@ export default function App() {
 
   useEffect(() => {
     if (mainView.kind !== 'source') return
-    const next: 'baidu' | 'quark' | 'all' =
+    const next: 'baidu' | 'quark' | 'all' | 'local' =
       mainView.sourceId === 'quark' ? 'quark' : mainView.sourceId === 'all' ? 'all' : 'baidu'
     if (next !== cloudSourceRef.current) {
       cloudSourceRef.current = next
@@ -256,7 +291,7 @@ export default function App() {
     }
   }, [mainView, loadLibraryPage])
 
-  async function refreshPlaylistTracks(playlistId: string): Promise<void> {
+  const refreshPlaylistTracks = useCallback(async (playlistId: string): Promise<void> => {
     const seq = ++playlistRequestSeq.current
     try {
       const tracks = await window.api.playlistListTracks(playlistId)
@@ -264,7 +299,37 @@ export default function App() {
     } catch {
       // 保留上一次内容，避免竞态覆盖
     }
-  }
+  }, [])
+
+  const completedAiIdsRef = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    if (aiLoading || aiLoadError) return
+    const completed = aiTasks.filter(task => task.status === 'succeeded' && task.trackId)
+    const previous = completedAiIdsRef.current
+    completedAiIdsRef.current = new Set(completed.map(task => task.id))
+    if (!previous) return
+    const changedIds = new Set(completed.filter(task => !previous.has(task.id)).map(task => task.trackId!))
+    if (!changedIds.size) return
+    void loadLibraryPage(cloudSourceRef.current, 0)
+    void refreshFavorites()
+    if (activePlaylistId) void refreshPlaylistTracks(activePlaylistId)
+    void Promise.all([...changedIds].map(id => window.api.trackGetDetail(id).catch(() => null))).then(updates => {
+      for (const updated of updates) {
+        if (!updated) continue
+        setDetailTrack(track => track?.id === updated.id ? { ...track, ...updated } : track)
+        setLocalTracks(tracks => tracks.map(track => track.id === updated.id ? { ...track, ...updated } : track))
+      }
+    })
+  }, [aiTasks, aiLoading, aiLoadError, loadLibraryPage, refreshFavorites, refreshPlaylistTracks, activePlaylistId])
+
+  useEffect(() => window.api.onLibraryChanged(() => {
+    void refreshPlaylists()
+    void refreshFavorites()
+    void refreshAllTracksTotal()
+    void loadLibraryPage(cloudSourceRef.current, libraryOffset)
+    if (activePlaylistId) void refreshPlaylistTracks(activePlaylistId)
+  }), [activePlaylistId, libraryOffset, loadLibraryPage, refreshPlaylists, refreshFavorites,
+    refreshAllTracksTotal, refreshPlaylistTracks])
 
   function playAllFromPlaylist(): void {
     if (playlistTracks.length === 0) return
@@ -286,18 +351,18 @@ export default function App() {
     replaceQueueAndPlay(pickRandomTracks(favoriteTracks, 20))
   }
 
-  async function playAllFromLibrary(): Promise<void> {
+  async function playAllFromLibrary(sourceId: string): Promise<void> {
     try {
-      const all = await window.api.listTracks('all')
+      const all = await window.api.listTracks(sourceId)
       if (all.length > 0) replaceQueueAndPlay(all)
     } catch (reason) {
       setError(messageFrom(reason, '无法载入全部音乐'))
     }
   }
 
-  async function playRandomTwentyFromLibrary(): Promise<void> {
+  async function playRandomTwentyFromLibrary(sourceId: string): Promise<void> {
     try {
-      const all = await window.api.listTracks('all')
+      const all = await window.api.listTracks(sourceId)
       if (all.length > 0) replaceQueueAndPlay(pickRandomTracks(all, 20))
     } catch (reason) {
       setError(messageFrom(reason, '无法载入全部音乐'))
@@ -329,10 +394,18 @@ export default function App() {
   }
 
   useEffect(() => {
-    window.api.getSources().then(setSources).catch(() => setError('无法载入音乐来源'))
+    let active = true
     void refreshPlaylists()
     void refreshFavorites()
     void refreshAllTracksTotal()
+    void window.api.getSources()
+      .then(availableSources => {
+        if (active) setSources(availableSources)
+      })
+      .catch(() => {
+        if (active) setError({ title: '无法读取音乐来源' })
+      })
+
     window.api.baiduGetStatus()
       .then(status => {
         setBaiduStatus(status)
@@ -356,7 +429,10 @@ export default function App() {
       .catch(() => setWebdavStatus({ configured: false, connected: false, url: '', username: '' }))
 
     const unsubscribe = window.api.onSyncProgress(progress => setSyncProgress(progress))
-    return unsubscribe
+    return () => {
+      active = false
+      unsubscribe()
+    }
   }, [loadLibraryPage, refreshPlaylists, refreshFavorites, refreshAllTracksTotal])
 
   useEffect(() => {
@@ -364,26 +440,12 @@ export default function App() {
     return window.api.onUpdateStatus(setUpdateSnapshot)
   }, [])
 
-  async function installCli(): Promise<void> {
-    setCliInstallBusy(true)
-    setCliInstallError(null)
-    try {
-      await window.api.cliInstall()
-      setCliInstalled(true)
-    } catch (installError) {
-      setCliInstallError(messageFrom(installError, '命令行安装失败'))
-    } finally {
-      setCliInstallBusy(false)
-    }
-  }
-
   useEffect(() => window.api.onOpenSettings(() => {
     setSettingsSection('connections')
     setMainView({ kind: 'settings' })
   }), [])
 
-  // Remote commands must always call the *latest* state, not first-render closures.
-  // useEffect with [] captures stale functions; use ref to indirection.
+  // 远程命令必须调用最新状态，而不是首次渲染的闭包；因此用 ref 间接调用。
   const remoteCommandHandler = useRef<(command: RemoteCommand) => void>(() => {})
   remoteCommandHandler.current = (command) => {
     switch (command.action) {
@@ -400,7 +462,7 @@ export default function App() {
         playPrevious()
         break
       case 'togglePlay':
-        setRemoteTogglePlay(c => c + 1)
+        playerBarRef.current?.togglePlay()
         break
       case 'shuffle':
         handleShuffleChange(!shuffle)
@@ -409,16 +471,15 @@ export default function App() {
         cycleRepeatMode()
         break
       case 'setVolume':
-        setRemoteVolume(previous => ({ seq: previous.seq + 1, value: command.volume }))
+        playerBarRef.current?.setVolume(command.volume)
         break
       case 'seek':
-        setRemoteSeek(previous => ({ seq: previous.seq + 1, value: command.positionSec }))
+        playerBarRef.current?.seek(command.positionSec)
         break
     }
+    // 确认接收命令，不代表音频已经开始播放。
     if (command.id) void window.api.ackRemoteCommand(command.id)
   }
-  useEffect(() => window.api.onRemoteCommand(command => remoteCommandHandler.current(command)), [])
-
 
   useEffect(() => {
     void window.api.queueLoad()
@@ -434,6 +495,14 @@ export default function App() {
       .catch(() => undefined)
       .finally(() => setQueueHydrated(true))
   }, [])
+
+  // 先恢复持久化队列，再订阅远程命令，避免冷启动的播放命令被覆盖。
+  useEffect(() => {
+    if (!queueHydrated) return
+    const unsubscribe = window.api.onRemoteCommand(command => remoteCommandHandler.current(command))
+    void window.api.markRemotePlaybackReady().catch(() => undefined)
+    return unsubscribe
+  }, [queueHydrated])
 
   useEffect(() => {
     setPlayOrder(previous => {
@@ -497,7 +566,7 @@ export default function App() {
       return
     }
     void refreshPlaylistTracks(activePlaylistId)
-  }, [activePlaylistId])
+  }, [activePlaylistId, refreshPlaylistTracks])
 
   useEffect(() => {
     if (mainView.kind === 'favorites') void refreshFavorites()
@@ -605,6 +674,17 @@ export default function App() {
     }))
   }
 
+  async function openTrackById(id: string): Promise<void> {
+    const track = await window.api.trackGetDetail(id)
+    if (!track) throw new Error('曲目不在音乐库中')
+    openTrackDetail(track)
+  }
+
+  function openAiSettings(): void {
+    setSettingsSection('ai')
+    setMainView({ kind: 'settings' })
+  }
+
   function requestPlayback(): void {
     setPlaybackRequest(request => request + 1)
   }
@@ -679,7 +759,7 @@ export default function App() {
   async function loadBaiduDirectory(path: string): Promise<void> {
     const seq = ++baiduDirSeq.current
     setIsBaiduBusy(true)
-    setError(null)
+    setBaiduDirectoryError(null)
     try {
       const entries = await window.api.baiduListDirectory(path)
       if (seq !== baiduDirSeq.current) return
@@ -687,7 +767,7 @@ export default function App() {
       setBaiduPath(path)
       setImportPlaylistName(folderName(path))
     } catch (reason) {
-      if (seq === baiduDirSeq.current) setError(messageFrom(reason, '无法读取百度网盘目录'))
+      if (seq === baiduDirSeq.current) setBaiduDirectoryError({ ...messageFrom(reason, '无法读取百度网盘目录'), path })
     } finally {
       if (seq === baiduDirSeq.current) setIsBaiduBusy(false)
     }
@@ -815,7 +895,7 @@ export default function App() {
   async function loadWebdavDirectory(path: string): Promise<void> {
     const seq = ++webdavDirSeq.current
     setIsWebdavBusy(true)
-    setError(null)
+    setWebdavDirectoryError(null)
     try {
       const entries = await window.api.webdavListDirectory(path)
       if (seq !== webdavDirSeq.current) return
@@ -823,7 +903,7 @@ export default function App() {
       setWebdavPath(path)
       setWebdavImportName(folderName(path, 'WebDAV'))
     } catch (reason) {
-      if (seq === webdavDirSeq.current) setError(messageFrom(reason, '无法读取 WebDAV 目录'))
+      if (seq === webdavDirSeq.current) setWebdavDirectoryError({ ...messageFrom(reason, '无法读取 WebDAV 目录'), path })
     } finally {
       if (seq === webdavDirSeq.current) setIsWebdavBusy(false)
     }
@@ -847,7 +927,7 @@ export default function App() {
     }
   }
 
-  async function saveWebdavConfig(): Promise<void> {
+  async function saveWebdavConfig(): Promise<boolean> {
     setIsWebdavBusy(true)
     setError(null)
     try {
@@ -863,8 +943,9 @@ export default function App() {
         setWebdavRoots(await window.api.webdavListRoots())
         await loadLibraryPage('quark', 0)
       }
-    } catch (reason) {
-      setError(messageFrom(reason, '连接 WebDAV 失败'))
+      return status.connected
+    } catch {
+      return false
     } finally {
       setIsWebdavBusy(false)
     }
@@ -954,8 +1035,23 @@ export default function App() {
     }
   }
 
-  async function deletePlaylist(id: string, name: string): Promise<void> {
-    if (!window.confirm(`确定删除歌单「${name}」？此操作不可撤销。`)) return
+  async function renamePlaylist(): Promise<void> {
+    const name = renameDraft?.name.trim()
+    if (!renameDraft || !name || renaming || name === renameDraft.original) return
+    setRenaming(true)
+    setRenameFailed(false)
+    try {
+      const playlist = await window.api.playlistRename(renameDraft.id, name)
+      setPlaylists(previous => previous.map(item => item.id === playlist.id ? playlist : item))
+      setRenameDraft(null)
+    } catch {
+      setRenameFailed(true)
+    } finally {
+      setRenaming(false)
+    }
+  }
+
+  async function deletePlaylist(id: string): Promise<void> {
     try {
       await window.api.playlistDelete(id)
       if (activePlaylistId === id) setMainView({ kind: 'queue' })
@@ -985,7 +1081,7 @@ export default function App() {
   const currentTrackId = currentTrack?.id ?? null
   const detailReturnView = mainView.kind === 'trackDetail' ? mainView.returnTo : null
 
-  // Push playback state to main for CLI /status
+  // Report playback state so main can record play history.
   useEffect(() => {
     void window.api.pushPlaybackState({
       isPlaying,
@@ -1038,6 +1134,16 @@ export default function App() {
             <span className="source-icon source-local" aria-hidden="true">≡</span>
             <span>播放列表</span>
             <span className="source-status">{tracks.length}</span>
+          </button>
+        </nav>
+
+        <p className="sidebar-label">发现</p>
+        <nav className="source-nav" aria-label="发现">
+          <button type="button" className={`source-button ${mainView.kind === 'ai' ? 'active' : ''}`}
+            aria-current={mainView.kind === 'ai' ? 'page' : undefined} onClick={() => setMainView({ kind: 'ai' })}>
+            <span className="source-icon source-local" aria-hidden="true">✦</span>
+            <span>AI 检索</span>
+            {runningAiTasks.length > 0 && <span className="source-status ai-nav-count" title="进行中的检索">{runningAiTasks.length} 进行中</span>}
           </button>
         </nav>
 
@@ -1095,7 +1201,7 @@ export default function App() {
                 title="删除歌单"
                 onClick={event => {
                   event.stopPropagation()
-                  void deletePlaylist(playlist.id, playlist.name)
+                  setPlaylistToDelete(playlist)
                 }}
               >
                 ×
@@ -1119,7 +1225,7 @@ export default function App() {
 
         <div className="sidebar-footer">
           <span className="status-dot" />
-          SQLite 音乐库已启用
+          本地音乐索引
         </div>
       </aside>
 
@@ -1130,6 +1236,7 @@ export default function App() {
             <p className="eyebrow">
               {mainView.kind === 'settings'
                 ? '偏好设置'
+                : mainView.kind === 'ai' ? '发现'
                 : mainView.kind === 'queue'
                   ? '播放列表'
                   : mainView.kind === 'favorites'
@@ -1142,7 +1249,8 @@ export default function App() {
             </p>
             <h1>
               {mainView.kind === 'settings'
-                ? settingsSection === 'connections' ? '连接' : settingsSection === 'ai' ? '大模型' : '关于 corner'
+                ? SETTINGS_TITLES[settingsSection]
+                : mainView.kind === 'ai' ? 'AI 检索'
                 : mainView.kind === 'queue'
                   ? '当前播放'
                   : mainView.kind === 'favorites'
@@ -1156,6 +1264,12 @@ export default function App() {
                           : activeSource?.name ?? '音乐'}
             </h1>
           </div>
+          {mainView.kind === 'ai' && (
+            <div className="header-actions">
+              <button type="button" className="quiet-button" onClick={openAiSettings}>大模型设置</button>
+              <button type="button" className="primary-button" onClick={() => setShowTrackPicker(true)}>检索曲目</button>
+            </div>
+          )}
           {isLocal && (
             <button className="primary-button" onClick={() => void chooseLocalTracks()} disabled={isChoosing}>
               <span aria-hidden="true">＋</span>
@@ -1176,19 +1290,25 @@ export default function App() {
           )}
         </header>
 
-        {error && <div className="inline-error" role="alert">{error}</div>}
-        {syncProgress && (
-          <div className="sync-banner" role="status">
-            {syncProgress.phase === 'scanning'
-              ? `正在扫描 ${syncProgress.currentPath} · 已处理 ${syncProgress.tracksUpserted} 首`
-              : syncProgress.message ?? '同步完成'}
+        {syncProgress?.phase === 'scanning' && (
+          <div className="sync-banner" role="status" title={syncProgress.currentPath}>
+            正在扫描 {syncProgress.currentPath} · 已处理 {syncProgress.tracksUpserted} 首
           </div>
         )}
         {lastSyncResult && (
-          <SyncResultPanel result={lastSyncResult} onClose={() => setLastSyncResult(null)} />
+          <div className="sync-result-link" role="status">
+            <span>音乐库已更新 · 新增 {lastSyncResult.added} · 更新 {lastSyncResult.updated} · 移除 {lastSyncResult.removed}</span>
+            <button type="button" className="quiet-button" onClick={() => setShowSyncResult(true)}>查看详情</button>
+            <button type="button" className="notice-close" aria-label="关闭同步结果提示" onClick={() => setLastSyncResult(null)}>×</button>
+          </div>
         )}
 
-        <section className="library-content">
+        <section className="library-content" key={mainView.kind === 'source' ? mainView.sourceId : mainView.kind === 'playlist' ? mainView.playlistId : mainView.kind}>
+          {mainView.kind === 'ai' && (
+            <AiSearchCenter key={aiRunningView} initialTab={mainView.history ? 'history' : 'running'}
+              tasks={aiTasks} loading={aiLoading} loadError={aiLoadError}
+              onRefresh={refreshAiTasks} onOpenTrack={openTrackById} onOpenSettings={openAiSettings} />
+          )}
           {mainView.kind === 'settings' && (
             <SettingsPanel
               section={settingsSection}
@@ -1201,14 +1321,10 @@ export default function App() {
               webdavBusy={isWebdavBusy}
               webdavForm={webdavConfigForm}
               onWebdavFormChange={setWebdavConfigForm}
-              onWebdavSave={() => void saveWebdavConfig()}
+              onWebdavSave={saveWebdavConfig}
               onWebdavDisconnect={() => void disconnectWebdav()}
               updateSnapshot={updateSnapshot}
               updateBusy={updateBusy}
-              cliBusy={cliInstallBusy}
-              cliInstalled={cliInstalled}
-              cliError={cliInstallError}
-              onCliInstall={() => void installCli()}
               onUpdateCheck={() => void window.api.updateCheck().then(setUpdateSnapshot)}
               onUpdateDownload={() => void window.api.updateDownload().then(setUpdateSnapshot)}
               onUpdateInstall={() => void window.api.updateInstall()}
@@ -1216,10 +1332,14 @@ export default function App() {
           )}
 
           {detailReturnView && detailTrack && (
-            <TrackDetail
+            <TrackDetail key={detailTrack.id}
               track={detailTrack}
+              tasks={aiTasks}
+              onRefreshTasks={refreshAiTasks}
+              onOpenTasks={history => setMainView({ kind: 'ai', history })}
               onBack={() => setMainView(detailReturnView)}
               onPlay={() => playTemporary(detailTrack)}
+              onLibraryChanged={() => { void loadLibraryPage(cloudSourceRef.current, libraryOffset) }}
             />
           )}
 
@@ -1294,9 +1414,16 @@ export default function App() {
                   >
                     随机选择20首
                   </button>
+                  <button type="button" className="quiet-button" disabled={!activePlaylist} onClick={() => {
+                    if (activePlaylist) {
+                      setRenameFailed(false)
+                      setRenameDraft({ id: activePlaylist.id, original: activePlaylist.name, name: activePlaylist.name })
+                    }
+                  }}>重命名</button>
                   <button
                     className="quiet-button danger"
-                    onClick={() => activePlaylist && void deletePlaylist(activePlaylist.id, activePlaylist.name)}
+                    disabled={!activePlaylist}
+                    onClick={() => activePlaylist && setPlaylistToDelete(activePlaylist)}
                   >
                     删除歌单
                   </button>
@@ -1436,22 +1563,30 @@ export default function App() {
           {isAll && (
             <div className="library-panel playlist-panel">
               <div className="panel-header-row playlist-panel-header">
-                <p className="panel-title">全部音乐（{libraryTotal} 首）</p>
+                <div>
+                  <p className="panel-title">全部音乐（{libraryTotal} 首）</p>
+                </div>
                 <div className="playlist-actions">
                   <button
                     className="primary-button"
-                    onClick={() => void playAllFromLibrary()}
+                    onClick={() => void playAllFromLibrary('all')}
                     disabled={libraryTotal === 0}
                   >
                     全部播放
                   </button>
                   <button
                     className="quiet-button"
-                    onClick={() => void playRandomTwentyFromLibrary()}
+                    onClick={() => void playRandomTwentyFromLibrary('all')}
                     disabled={libraryTotal === 0}
                   >
                     随机选择20首
                   </button>
+                  <div className="filter-chips" role="group" aria-label="识别状态筛选">
+                    {([['all', '全部'], ['identified', '已识别'], ['unidentified', '未识别']] as const).map(([value, label]) => (
+                      <button key={value} type="button" aria-pressed={identifiedFilter === value}
+                        onClick={() => changeIdentifiedFilter(value)}>{label}</button>
+                    ))}
+                  </div>
                   <SearchField
                     value={librarySearch}
                     onChange={setLibrarySearch}
@@ -1501,7 +1636,10 @@ export default function App() {
                   >
                     <span className="track-number">{track.id === currentTrackId ? '▶' : libraryOffset + index + 1}</span>
                     <span className="track-name-cell">
-                      <span className="track-name">{track.title}</span>
+                      <span className="track-title-line">
+                        <span className="track-name">{track.title}</span>
+                        {track.identified && <span className="track-flag" title="已完成 MusicBrainz 识别">MB</span>}
+                      </span>
                       <span className="track-artist">{track.artist ?? trackSourceLabel(track.sourceId)}</span>
                     </span>
                     <span className="track-source">{trackSourceLabel(track.sourceId)}</span>
@@ -1531,7 +1669,10 @@ export default function App() {
                 >
                   <span className="track-number">{track.id === currentTrackId ? '▶' : index + 1}</span>
                   <span className="track-name-cell">
-                    <span className="track-name">{track.title}</span>
+                    <span className="track-title-line">
+                      <span className="track-name">{track.title}</span>
+                      {track.identified && <span className="track-flag" title="已完成 MusicBrainz 识别">MB</span>}
+                    </span>
                     <span className="track-artist">{track.artist ?? '本地文件'}</span>
                   </span>
                   <span className="track-source">本地</span>
@@ -1622,6 +1763,12 @@ export default function App() {
                       {isBaiduBusy ? '载入中…' : '刷新目录'}
                     </button>
                   </div>
+                  {baiduDirectoryError && (
+                    <div className="cloud-action-notice">
+                      <ActionNotice {...baiduDirectoryError} onDismiss={() => setBaiduDirectoryError(null)}
+                        action={{ label: '重试', run: () => void loadBaiduDirectory(baiduDirectoryError.path) }} />
+                    </div>
+                  )}
                   <div className="track-table" role="table" aria-label="百度网盘浏览">
                     <div className="track-table-header" role="row">
                       <span>类型</span><span>名称</span><span>大小</span>
@@ -1798,6 +1945,12 @@ export default function App() {
                       {isWebdavBusy ? '载入中…' : '刷新目录'}
                     </button>
                   </div>
+                  {webdavDirectoryError && (
+                    <div className="cloud-action-notice">
+                      <ActionNotice {...webdavDirectoryError} onDismiss={() => setWebdavDirectoryError(null)}
+                        action={{ label: '重试', run: () => void loadWebdavDirectory(webdavDirectoryError.path) }} />
+                    </div>
+                  )}
                   <div className="track-table" role="table" aria-label="WebDAV 浏览">
                     <div className="track-table-header" role="row">
                       <span>类型</span><span>名称</span><span>大小</span>
@@ -1912,7 +2065,54 @@ export default function App() {
         </section>
       </main>
 
+      {showSyncResult && lastSyncResult && (
+        <AppDialog title="音乐库同步详情" onClose={() => setShowSyncResult(false)}>
+          <SyncResultPanel result={lastSyncResult} />
+        </AppDialog>
+      )}
+      {error && <ErrorToast notice={error} onDismiss={dismissError} />}
+      {showTrackPicker && (
+        <AiTrackPicker runningIds={runningAiIds} onClose={() => setShowTrackPicker(false)} onStarted={() => {
+          setShowTrackPicker(false)
+          setAiRunningView(value => value + 1)
+          refreshAiTasks()
+        }} />
+      )}
+      {renameDraft && (
+        <AppDialog title="重命名歌单" compact onClose={() => { if (!renaming) setRenameDraft(null) }} footer={
+          <>
+            <button type="button" className="quiet-button" disabled={renaming} onClick={() => setRenameDraft(null)}>取消</button>
+            <button type="submit" form="rename-playlist-form" className="primary-button"
+              disabled={renaming || !renameDraft.name.trim() || renameDraft.name.trim() === renameDraft.original}>
+              {renaming ? '保存中…' : '保存名称'}
+            </button>
+          </>
+        }>
+          <form id="rename-playlist-form" className="ai-field" onSubmit={event => { event.preventDefault(); void renamePlaylist() }}>
+            <label className="ai-field-label" htmlFor="rename-playlist-name">歌单名称</label>
+            <input id="rename-playlist-name" className="app-text-input" value={renameDraft.name} autoFocus
+              onFocus={event => event.currentTarget.select()} disabled={renaming}
+              onChange={event => { setRenameFailed(false); setRenameDraft({ ...renameDraft, name: event.target.value }) }} />
+            {renameFailed && <ActionNotice title="未能修改歌单名称" message="请稍后重试。" onDismiss={() => setRenameFailed(false)} />}
+          </form>
+        </AppDialog>
+      )}
+      {playlistToDelete && (
+        <AppDialog title="删除歌单？" compact onClose={() => setPlaylistToDelete(null)} footer={
+          <>
+            <button type="button" className="quiet-button" autoFocus onClick={() => setPlaylistToDelete(null)}>取消</button>
+            <button type="button" className="quiet-button danger" onClick={() => {
+              const id = playlistToDelete.id
+              setPlaylistToDelete(null)
+              void deletePlaylist(id)
+            }}>删除歌单</button>
+          </>
+        }>
+          <p>「{playlistToDelete.name}」将从歌单列表中移除。原始音乐文件不会被删除。</p>
+        </AppDialog>
+      )}
       <PlayerBar
+        ref={playerBarRef}
         tracks={tracks}
         currentIndex={currentIndex}
         currentTrack={currentTrack}
@@ -1926,9 +2126,6 @@ export default function App() {
         onTemporaryEnded={handleTemporaryEnded}
         onNext={playNext}
         onPrevious={playPrevious}
-        remoteTogglePlay={remoteTogglePlay}
-        remoteVolume={remoteVolume}
-        remoteSeek={remoteSeek}
         onPlayingChange={setIsPlaying}
         onVolumeChange={setVolume}
         onPositionChange={(position, duration) => {

@@ -1,10 +1,12 @@
-appId: com.lenohard.corner
+appId: com.lenohard.corner.desktop
 productName: corner
 directories:
   buildResources: build
   output: dist
 files:
-  - out/**/*
+  - out/main/**/*
+  - out/preload/**/*
+  - out/renderer/**/*
   - package.json
   - '!**/.env'
   - '!**/.env.*'

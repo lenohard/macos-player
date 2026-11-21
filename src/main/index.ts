@@ -4,22 +4,18 @@ import {
   dialog,
   ipcMain,
   Menu,
-  net,
   protocol,
   type OpenDialogOptions
 } from 'electron'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
-import { randomUUID } from 'crypto'
-import { basename, dirname, extname, join } from 'path'
-import { pathToFileURL } from 'url'
+import { readFileSync, writeFileSync } from 'fs'
+import { basename, extname, join } from 'path'
 import {
   IPC_CHANNELS,
+  LIBRARY_CHANGED_CHANNEL,
   OPEN_SETTINGS_CHANNEL,
-  SONG_INFO_EVENT_CHANNEL,
+  SONG_INFO_TASKS_CHANGED_CHANNEL,
   SYNC_PROGRESS_CHANNEL,
   UPDATE_STATUS_CHANNEL,
-  type SongInfoEvent,
   type CloudDownloadRequest,
   type CloudEntry,
   type CloudEntryContextMenuAction,
@@ -32,6 +28,7 @@ import {
   type Track,
   type TrackContextMenuAction,
   type TrackContextMenuRequest,
+  type TrackIdentification,
   type UpdateSnapshot
 } from '../shared/ipc'
 import { AppUpdater } from './updater'
@@ -40,12 +37,15 @@ import { resyncBaiduDirectory, syncBaiduDirectory } from './baidu-sync'
 import { BaiduService } from './baidu'
 import { openLibraryDatabase } from './library-db'
 import { LibraryService } from './library'
-import { fetchWithElectronNet, isAsciiHeaderValue } from './media-net'
+import { streamTrack } from './track-stream'
 import { WebDAVService } from './webdav'
 import { syncWebDAVDirectory, resyncWebDAVDirectory } from './webdav-sync'
-import { startCliServer, stopCliServer, setPlaybackState, ackRemoteCommand } from './cli-server'
 import { SongInfoService } from './song-info'
 import { downloadTrack } from './download'
+import { lookupMusicBrainz } from './musicbrainz'
+import { validateLocalTrackFile } from './local-track-file'
+import { setPlaybackState, startCliServer } from './cli-server'
+import { DesktopPlaybackCommands, installDesktopCli } from './desktop-cli'
 
 const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.wav'])
 
@@ -63,7 +63,18 @@ protocol.registerSchemesAsPrivileged([
 
 app.setName('corner')
 
+const desktopProfile = app.getPath('userData')
+process.env.CORNER_DATA_DIR = join(desktopProfile, 'local-library')
+
+// One owner per Electron runtime profile.
+const ownsProfile = app.requestSingleInstanceLock()
+if (!ownsProfile) app.quit()
+
 let mainWindow: BrowserWindow | null = null
+const desktopPlayback = new DesktopPlaybackCommands(() => {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow()
+  return mainWindow
+})
 let library: LibraryService | null = null
 let lastPlayedTrackId: string | null = null
 const baiduService = new BaiduService()
@@ -86,32 +97,6 @@ let songInfoService: SongInfoService | null = null
 function getSongInfo(): SongInfoService {
   if (!songInfoService) songInfoService = new SongInfoService(getLibrary(), () => aiService.getConfig())
   return songInfoService
-}
-
-function installCli(): string {
-  const source = app.isPackaged
-    ? join(process.resourcesPath, 'corner-cli.mjs')
-    : join(app.getAppPath(), 'scripts', 'corner-cli.mjs')
-  if (!existsSync(source)) throw new Error('找不到命令行文件，请重新安装 corner。')
-
-  const destination = join(homedir(), '.local', 'bin', 'corner')
-  mkdirSync(dirname(destination), { recursive: true })
-
-  try {
-    const existing = lstatSync(destination)
-    if (!existing.isSymbolicLink()) {
-      throw new Error(`安装目标已存在且不是 corner 创建的链接：${destination}`)
-    }
-    if (readlinkSync(destination) !== source) unlinkSync(destination)
-  } catch (error) {
-    if (!(error instanceof Error) || !error.message.includes('ENOENT')) {
-      if (error instanceof Error && error.message.startsWith('安装目标已存在')) throw error
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-  }
-
-  if (!existsSync(destination)) symlinkSync(source, destination)
-  return destination
 }
 
 function emitSyncProgress(progress: SyncProgress): void {
@@ -162,7 +147,17 @@ function createWindow(): void {
       spellcheck: false
     }
   })
+  const sender = mainWindow.webContents
+  sender.on('did-start-navigation', details => {
+    if (details.isMainFrame && !details.isSameDocument) desktopPlayback.reset(sender)
+  })
+  sender.on('render-process-gone', () => {
+    desktopPlayback.reset(sender)
+    setPlaybackState(null)
+  })
   mainWindow.on('closed', () => {
+    desktopPlayback.reset(sender)
+    setPlaybackState(null)
     mainWindow = null
   })
 
@@ -182,9 +177,7 @@ const sources: LibrarySource[] = [
 ipcMain.handle(IPC_CHANNELS.queueSave, (_event, state: PlaybackQueueState): void => {
   getLibrary().savePlaybackQueue(state)
 })
-ipcMain.handle(IPC_CHANNELS.queueLoad, (): PlaybackQueueState | null =>
-  getLibrary().loadPlaybackQueue()
-)
+ipcMain.handle(IPC_CHANNELS.queueLoad, (): PlaybackQueueState | null => getLibrary().loadPlaybackQueue())
 
 ipcMain.handle(IPC_CHANNELS.getSources, (): LibrarySource[] => sources)
 
@@ -194,8 +187,9 @@ ipcMain.handle(IPC_CHANNELS.listTracks, (_event, sourceId: string): Track[] =>
 
 ipcMain.handle(
   IPC_CHANNELS.listTracksPage,
-  (_event, sourceId: string, offset: number, limit: number, search?: string) =>
-    getLibrary().listTracksPage(sourceId, offset, limit, search)
+  (_event, sourceId: string, offset: number, limit: number, search?: string,
+    identified?: 'all' | 'identified' | 'unidentified') =>
+    getLibrary().listTracksPage(sourceId, offset, limit, search, identified ?? 'all')
 )
 ipcMain.handle(IPC_CHANNELS.trackGetDetail, (_event, id: string) => getLibrary().getTrackDetail(id))
 
@@ -419,8 +413,15 @@ ipcMain.handle(IPC_CHANNELS.updateGetStatus, () => appUpdater.getSnapshot())
 ipcMain.handle(IPC_CHANNELS.updateCheck, () => appUpdater.checkForUpdates())
 ipcMain.handle(IPC_CHANNELS.updateDownload, () => appUpdater.downloadUpdate())
 ipcMain.handle(IPC_CHANNELS.updateInstall, () => appUpdater.quitAndInstall())
-ipcMain.handle(IPC_CHANNELS.cliInstall, () => installCli())
-ipcMain.handle(IPC_CHANNELS.playbackPushState, (_event, state: PlaybackState): void => {
+ipcMain.handle(IPC_CHANNELS.cliInstall, () => installDesktopCli())
+ipcMain.handle(IPC_CHANNELS.playbackRemoteReady, event => {
+  if (event.sender === mainWindow?.webContents) desktopPlayback.markReady(event.sender)
+})
+ipcMain.handle(IPC_CHANNELS.playbackAckCommand, (event, commandId: string) => {
+  desktopPlayback.acknowledge(event.sender, commandId)
+})
+ipcMain.handle(IPC_CHANNELS.playbackPushState, (event, state: PlaybackState): void => {
+  if (event.sender !== mainWindow?.webContents) return
   setPlaybackState(state)
   const trackId = state.currentTrack?.id ?? null
   if (trackId && trackId !== lastPlayedTrackId && state.isPlaying) {
@@ -432,104 +433,93 @@ ipcMain.handle(IPC_CHANNELS.playbackPushState, (_event, state: PlaybackState): v
     }
   }
 })
-ipcMain.handle(IPC_CHANNELS.playbackAckCommand, (_event, commandId: string): void => {
-  ackRemoteCommand(commandId)
-})
 
 ipcMain.handle(IPC_CHANNELS.aiGetConfig, () => aiService.getConfig())
 
 ipcMain.handle(IPC_CHANNELS.aiSaveConfig, (_event, config) => aiService.saveConfig(config))
-ipcMain.handle(IPC_CHANNELS.aiFetchModels, () => aiService.fetchModels())
+ipcMain.handle(IPC_CHANNELS.aiFetchModels, (_event, piWebUrl?: string) => aiService.fetchModels(piWebUrl))
 ipcMain.handle(IPC_CHANNELS.aiTestConnection, () => aiService.testConnection())
 ipcMain.handle(IPC_CHANNELS.trackDownload, (_event, trackId: string, dest?: string) =>
   downloadTrack({ library: getLibrary(), baidu: baiduService, webdav: webdavService }, trackId, dest))
 ipcMain.handle(IPC_CHANNELS.songInfoGet, (_event, identifier: string) => getSongInfo().get(identifier))
-ipcMain.handle(IPC_CHANNELS.songInfoLookup, (_event, trackId: string): { requestId: string } => {
-  const detail = getLibrary().getTrackDetail(trackId)
-  if (!detail) throw new Error('曲目不存在。')
-  const requestId = randomUUID()
-  const send = (event: SongInfoEvent): void => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(SONG_INFO_EVENT_CHANNEL, event)
-  }
-  const prompt = [
-    `歌曲名: ${detail.title}`,
-    detail.artist ? `歌手: ${detail.artist}` : '',
-    `文件路径: ${detail.path}`
-  ].filter(Boolean).join('\n')
-  void getSongInfo().lookupStream(
-    prompt,
-    text => send({ type: 'delta', requestId, text }),
-    undefined,
-    { path: detail.path, title: detail.title, source: detail.sourceId },
-    status => send({ type: 'tools', requestId, status })
-  )
-    .then(meta => send({ type: 'done', requestId, meta }))
-    .catch((error: unknown) => send({
-      type: 'error',
-      requestId,
-      message: error instanceof Error ? error.message : String(error)
-    }))
-  return { requestId }
+ipcMain.handle(IPC_CHANNELS.songInfoLookup, (_event, trackId: string): { requestId: string } =>
+  getSongInfo().lookupTrack(trackId)
+)
+ipcMain.handle(IPC_CHANNELS.songInfoListTasks, () => getSongInfo().listTasks())
+ipcMain.handle(IPC_CHANNELS.songInfoGetTaskResult, (_event, id: string) => getSongInfo().getTaskResult(id))
+ipcMain.handle(IPC_CHANNELS.songInfoCancelTask, (_event, id: string) => getSongInfo().cancelTask(id))
+ipcMain.handle(IPC_CHANNELS.songInfoRetryTask, (_event, id: string) => getSongInfo().retryTask(id))
+ipcMain.handle(IPC_CHANNELS.songInfoDeleteTask, (_event, id: string) => getSongInfo().deleteTask(id))
+
+// MusicBrainz 识别：候选检索不写库，用户确认后由 trackApplyIdentification 写入。
+ipcMain.handle(IPC_CHANNELS.musicBrainzLookup, async (_event, trackId: string) => {
+  const track = getLibrary().getTrackDetail(trackId)
+  if (!track || track.sourceId !== 'local') throw new Error('曲目不存在或不是本地曲目。')
+  const file = await validateLocalTrackFile(track.path)
+  return lookupMusicBrainz(file.path, track.title, track.artist)
 })
+ipcMain.handle(IPC_CHANNELS.trackApplyIdentification, (_event, trackId: string, identification: TrackIdentification) =>
+  getLibrary().applyIdentification(trackId, identification))
 
 app.whenReady().then(() => {
-  getLibrary()
-  startCliServer(
-    getLibrary(),
-    () => {
-      // 窗口被关闭（macOS 不退出应用）时自动重建，保证遥控器命令始终可送达
-      if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
-      createWindow()
-      return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
-    },
-    async (rootPath: string) => {
-      const lib = getLibrary()
-      const normalized = rootPath === '/' ? '/' : rootPath.replace(/\/+$/, '') || '/'
-      if (lib.listLibraryRoots('baidu').some(root => root.root_path === normalized)) {
-        return resyncBaiduDirectory(baiduService, lib, normalized, emitSyncProgress)
+  if (!ownsProfile) return
+  const desktopLibrary = getLibrary()
+  try {
+    app.once('before-quit', startCliServer({
+      library: desktopLibrary,
+      songInfo: getSongInfo(),
+      endpointDir: join(desktopProfile, 'desktop-cli'),
+      baidu: baiduService,
+      webdav: webdavService,
+      desktop: {
+        sendCommand: command => desktopPlayback.send(command),
+        async resyncLibrary(rootPath) {
+          const normalized = rootPath.replace(/\/+$/, '') || '/'
+          if (desktopLibrary.listLibraryRoots('baidu').some(root => root.root_path === normalized)) {
+            return resyncBaiduDirectory(baiduService, desktopLibrary, normalized, emitSyncProgress)
+          }
+          if (desktopLibrary.listLibraryRoots('quark').some(root => root.root_path === normalized)) {
+            return resyncWebDAVDirectory(webdavService, desktopLibrary, normalized, emitSyncProgress)
+          }
+          throw new Error('该目录尚未导入，请先执行导入。')
+        },
+        onLibraryChanged: () => {
+          if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+            mainWindow.webContents.send(LIBRARY_CHANGED_CHANNEL)
+          }
+        }
       }
-      if (lib.listLibraryRoots('quark').some(root => root.root_path === normalized)) {
-        return resyncWebDAVDirectory(webdavService, lib, normalized, emitSyncProgress)
-      }
-      throw new Error('该目录尚未导入，请先执行导入。')
-    },
-    getSongInfo(),
-    baiduService,
-    webdavService
-  )
-  installApplicationMenu()
-
-  protocol.handle('app-media', request => {
-    const id = new URL(request.url).hostname
-    const source = getLibrary().resolveMedia(id)
-    if (!source) return new Response('Not found', { status: 404 })
-    if (source.kind === 'baidu') return baiduService.stream(source.path, request)
-    if (source.kind === 'webdav') return webdavService.stream(source.path, request)
-
-    const headers = new Headers()
-    const range = request.headers.get('Range')
-    if (range) headers.set('Range', range)
-    return net.fetch(pathToFileURL(source.path).toString(), {
-      method: request.method,
-      headers
-    })
+    }))
+  } catch (error) {
+    console.error('[CLI] desktop listener failed:', error)
+  }
+  // 检索任务列表变化推送给渲染进程（进度事件可合并，不推增量文本）
+  getSongInfo().onTasksChanged(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(SONG_INFO_TASKS_CHANGED_CHANNEL)
+    }
   })
+  installApplicationMenu()
+  protocol.handle('app-media', request =>
+    streamTrack(getLibrary(), baiduService, webdavService, new URL(request.url).hostname, request)
+  )
 
   createWindow()
   appUpdater.scheduleStartupCheck()
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    stopCliServer()
-    app.quit()
+  if (process.platform !== 'darwin') app.quit()
+})
+
+function showWindow(): void {
+  if (!ownsProfile || !app.isReady()) return
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow()
+  else {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
   }
-})
-
-app.on('before-quit', () => {
-  stopCliServer()
-})
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow()
-})
+}
+app.on('activate', showWindow)
+app.on('second-instance', showWindow)

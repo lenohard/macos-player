@@ -30,6 +30,9 @@ Do not commit `node_modules/`, `out/`, or `*.tsbuildinfo`.
 | Preload | `src/preload/` | `contextBridge` → `window.api` (typed `IPCApi`) |
 | Renderer | `src/renderer/` | React UI, queue/shuffle/playlists (no Node) |
 | Shared | `src/shared/ipc.ts` | **Single source of truth** for channel names and DTOs |
+| Web | `src/renderer/web.html`, `src/renderer/src/web/` | Phone/desktop browser entry; reuses player and AI UI and consumes the same Corner library over HTTP |
+
+**Share Hub**: `/hub/corner/` proxies allowlisted browser routes to **Corner Web**, a separately built background-only app (`com.lenohard.corner.web`, launchd `com.user.corner-web`; `npm run dist:web`). The desktop app (`com.lenohard.corner.desktop`) is local-only + cloud providers and does not call the web service. Reuse source modules, not runtime packages, endpoints or databases. Keep the existing `local-library` and `server-library` data paths. See the [README](./README.md#share-hub-网页版).
 
 **Security (do not weaken):**
 
@@ -86,11 +89,11 @@ When adding features: extend **shared types first**, then main handler, preload,
 
 - 一个「音乐库」= `library_roots` 表里的一行 = 一个**已导入的网盘根目录**（import root），以 `root_path` 区分（如 `/音乐`）。字段：`source_id`（baidu/quark）、`root_path`、`playlist_id`（导入时自动关联的歌单）、`last_sync_at/status`。示例见 `index.ts` 的 `baiduListRoots`。
 - 「更新某个音乐库」= 对那个 `rootPath` 重跑 resync（BFS 扫描该目录，增删改曲目 + 软删未见 + 更新关联歌单），返回 `BaiduImportResult { rootPath, playlistId, scanned, added, updated, removed, addedTracks, updatedTracks, removedTracks }`。
-- CLI：`corner libraries`（列出音乐库） / `corner library update <rootPath>`（更新指定库）。`cli-server.ts` 通过 `startCliServer(library, getMainWindow, resyncLibrary)` 注入的 `resyncLibrary(rootPath)` 回调（在 `index.ts` 接线，按 rootPath 匹配 baidu/quark 后调 `resyncBaiduDirectory`/`resyncWebDAVDirectory`）。
+- 桌面模式下，「更新某个音乐库」重扫相应 `rootPath`（BFS 扫描网盘，增删改曲目并更新关联歌单）。网页服务只索引本机音乐目录，启动及每小时自动扫描，无云端同步。
 
 ## CLI REST API
 
-Implemented in `src/main/cli-server.ts`; client is `scripts/corner-cli.mjs` (installed as `corner`). Server binds `127.0.0.1` on a random port written to `userData/cli-port`; an auth token is written to `userData/cli-token` (mode 0600) and must be sent as `Authorization: Bearer <token>` on every request except `GET /health`.
+`src/main/cli-server.ts` runs separately in the desktop app and Corner Web. `corner` defaults to the desktop library and can start the app; `corner --web` selects the independently running Web library. Desktop discovery files (`cli-port`, `cli-token`) are in `userData/desktop-cli/`; Web keeps its files under `~/Library/Application Support/corner/`. Both listeners bind to `127.0.0.1`, require a token except for `/health`, and report `mode: 'desktop' | 'web'` on `/health` and `/status`. The CLI verifies the mode and never falls back. Share Hub uses only the Web discovery directory and proxies an explicit allowlist.
 
 Endpoints (all JSON):
 
@@ -108,7 +111,7 @@ Endpoints (all JSON):
 | GET/POST | `/playlists/:id/tracks` | list / add (`{trackId}` or `{trackIds}`) |
 | DELETE | `/playlists/:id/tracks/:trackId` | remove track |
 | GET | `/search?q=&limit=` | search tracks |
-| POST | `/play` | `{playlistId\|trackId\|query}` |
+| POST | `/play` | `{playlistId\|trackId\|query\|random}` |
 | POST | `/toggle-play` `/next` `/prev` `/shuffle` `/repeat` | transport |
 | POST | `/volume` | `{volume:0..1}` |
 | POST | `/seek` | `{positionSec}` absolute or `{offsetSec}` relative |
@@ -116,14 +119,15 @@ Endpoints (all JSON):
 | GET/PUT/DELETE | `/favorites/:trackId` | check / add / remove favorite |
 | GET | `/history?limit=` | recently played |
 
-Transport commands (`/play`, `/toggle-play`, `/volume`, `/seek`, …) are sent to the renderer via `playback:remoteCommand` and **awaited for ack** (`playback:ackCommand`) with a 3s timeout; `ok` reflects whether the renderer confirmed the command (not whether playback itself completed). `PlaybackState` is pushed renderer→main on `playback:pushState` and includes `volume`, `positionSec`, `durationSec`.
+Transport and cloud library sync are desktop-only. `desktop-cli.ts` waits for the desktop renderer to hydrate its playback queue (`playback:remoteReady`), dispatches `playback:remoteCommand`, and waits up to 3 s for `playback:ackCommand`. The acknowledgement means the renderer accepted the command, not that audio started. `PlaybackState` is pushed on `playback:pushState`.
 
 ## Renderer notes
 
 - Alias: `@shared` → `src/shared` (see `electron.vite.config.js`).
 - Static assets: `src/renderer/public/`; use **relative** `./…` URLs in production (`file://`).
-- Branding: `src/renderer/public/corner-logo.png` is the canonical app Logo; use `./corner-logo.png` for the renderer favicon and sidebar mark. Runtime/package identity is `corner` (`app.setName('corner')` plus the package name). Run `npm run icon` to generate the macOS bundle icon at `build/icon.icns`; full packaging/signing remains M6.
+- Branding: the desktop icon is hand-made — `src/renderer/public/corner-logo.png` is the source of truth and `npm run icon` re-derives `build/icon.icns` from it. The web service has its own logo: `build/corner-web.svg` → `npm run icon:web` rewrites `build/corner-web.icns` and `src/renderer/web-public/corner-logo.png`. Keep the desktop runtime name `corner` despite the bundle ID change to preserve the existing app data and credentials.
 - Large libraries (~10k tracks): use `listTracksPage` (UI page size 100), not loading full lists into React state.
+- MusicBrainz 识别（桌面与网页同一套 UI）：`src/renderer/src/MusicBrainzIdentify.tsx` 是唯一入口，桌面走 IPC `musicBrainzLookup` / `trackApplyIdentification`，网页走 REST `GET /tracks/:id/identify` + `PATCH /tracks/:id`（body 带 `identification`）。候选由 `src/main/musicbrainz.ts` 生成，带 `releaseId`（= 封面来源：coverartarchive.org/release/<id>/front-500）与 `artistId`；检索不写库，点「使用此结果」才写入 `tracks` 的 `album/cover_url/mb_recording_id/mb_release_id/mb_artist_id/mb_score/mb_identified_at`（schema v6）并改写标题/艺术家。「已识别」= `mb_recording_id IS NOT NULL`，列表筛选参数 `identified=all|identified|unidentified`。
 
 ## Build / native deps
 
@@ -184,7 +188,7 @@ Detailed checklist and decisions: `local/task/progress.md` (may be gitignored by
 - **BAIDU define 注入坑**：注入逻辑必须用 `process.env[key]?.trim() || fileEnv[key]?.trim() || ''`——若环境变量是**空字符串**，`??` 不回退 .env 文件，产物会注入空值（现象：播放正常但 UI 显示「请先配置 Client ID」）。
 - **百度「请先配置」误判**：若 `IPC_CHANNELS.baiduGetStatus` 未在主进程 `ipcMain.handle` 注册，renderer 的 `baiduGetStatus()` 会 reject，`.catch()` 会把状态设成 `configured: false`，文案与真未配置相同；播放仍可用（token 在 safeStorage）。新增/改 IPC 时按 `src/shared/ipc.ts` → main → preload → renderer 全链路核对。
 - **本地**：`npm run dist`（当前平台，不上传）；**发布**：`npm run release` 或 push `v*.*.*` tag 触发 `.github/workflows/release.yml`（`GH_TOKEN` = `GITHUB_TOKEN`，三平台 matrix：macOS + Windows + Linux）。
-- **签名/公证（已配好）**：Developer ID 签名 + notarize 已打通。本地 keychain 有 `Developer ID Application: denghui wang (285P3M6846)`（p12 在 `~/.agents/skills/apple-cli-build/extra/corner-devid.p12`，密码 `corner2026`）；`electron-builder.yml` `mac.notarize: true`；CI 用 secrets：`CSC_LINK`（p12 base64）+ `CSC_KEY_PASSWORD` + `APPLE_API_KEY`/`APPLE_API_KEY_ID`/`APPLE_API_ISSUER`（见 apple-cli-build skill）。本地打包不设 API key env 时会跳过公证（正常）。
+- **签名/公证（已配好）**：Developer ID 签名 + notarize 已打通。本地 keychain 有 `Developer ID Application: denghui wang (285P3M6846)`（签名凭据保存在仓库外）；`electron-builder.yml` `mac.notarize: true`；CI 用 secrets：`CSC_LINK`（p12 base64）+ `CSC_KEY_PASSWORD` + `APPLE_API_KEY`/`APPLE_API_KEY_ID`/`APPLE_API_ISSUER`（见 apple-cli-build skill）。本地打包不设 API key env 时会跳过公证（正常）。
 - **electron-builder 默认把 GitHub Release 打成 draft**：`npm run release`（`--publish always`）成功后 Release 仍是 draft，而 electron-updater 不会提供 draft 更新 → 每次发版后需 `env -u GH_TOKEN gh release edit <tag> --draft=false`（GH_TOKEN 环境变量会遮蔽 gh，见全局 memory）。
 - **⚠️ 已有 release 会拦截重发（同版本回移 tag 时）**：若该 tag 的 release 已存在且为**非 draft**，electron-builder 会报 `existing type not compatible with publishing type (existingType=release publishingType=draft)` 并**跳过全部资产上传**，workflow 显示 success 但资产仍是旧的。修复流程：`env -u GH_TOKEN gh release delete <tag> --yes`（保留 tag）→ `git push origin :refs/tags/<tag>` 再 `git push origin <tag>`（重推制造 push 事件触发 CI）→ 等新 run 完成后 `gh release edit <tag> --draft=false`。判断产物是否更新：看资产 `updatedAt` 是否为新构建时间，别只看 workflow conclusion。
 

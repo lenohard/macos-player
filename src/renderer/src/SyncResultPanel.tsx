@@ -10,11 +10,9 @@ interface Section {
 }
 
 export default function SyncResultPanel({
-  result,
-  onClose
+  result
 }: {
   result: BaiduImportResult
-  onClose: () => void
 }): JSX.Element {
   const sections: Section[] = [
     { key: 'added', label: '新增', count: result.added, tracks: result.addedTracks },
@@ -30,7 +28,6 @@ export default function SyncResultPanel({
         <p className="panel-title">
           同步结果 · 新增 {result.added} · 更新 {result.updated} · 移除 {result.removed}
         </p>
-        <button className="quiet-button" onClick={onClose}>关闭</button>
       </div>
       {!hasChanges && <p className="sync-result-empty">未发现变化</p>}
       <div className="sync-result-sections">

@@ -1,6 +1,13 @@
 import { randomUUID } from 'crypto'
 import { basename, extname } from 'path'
+import { shell } from 'electron'
 import type { LibraryDatabase } from './library-db'
+import {
+  canRestoreLocalTrackFile,
+  sameLocalTrackFile,
+  validateLocalTrackFile,
+  validateLocalTrackFileSync
+} from './local-track-file'
 import type {
   CloudEntry,
   ExportedTrackRef,
@@ -9,8 +16,11 @@ import type {
   PlaybackQueueState,
   PlaylistSummary,
   RepeatMode,
+  SongInfoTask,
+  SongInfoTaskStatus,
   Track,
   TrackDetail,
+  TrackIdentification,
   TracksPage
 } from '../shared/ipc'
 
@@ -26,7 +36,24 @@ export interface TrackRow {
   modified_at: number
   md5: string | null
   is_deleted: number
+  album: string | null
+  cover_url: string | null
+  mb_recording_id: string | null
+  mb_release_id: string | null
+  mb_artist_id: string | null
+  mb_score: number | null
+  mb_identified_at: number | null
 }
+
+/** tracks 表的完整列清单（带别名/前缀的查询单独写）。 */
+const TRACK_COLUMNS = `id, source_id, remote_id, path, title, artist, duration_sec, size,
+             modified_at, md5, is_deleted, album, cover_url, mb_recording_id, mb_release_id,
+             mb_artist_id, mb_score, mb_identified_at`
+
+/** JOIN 场景下的同列清单（带表前缀）。 */
+const TRACK_COLUMNS_T = `t.id, t.source_id, t.remote_id, t.path, t.title, t.artist, t.duration_sec,
+             t.size, t.modified_at, t.md5, t.is_deleted, t.album, t.cover_url, t.mb_recording_id,
+             t.mb_release_id, t.mb_artist_id, t.mb_score, t.mb_identified_at`
 
 export interface LibraryRootRow {
   id: string
@@ -48,6 +75,11 @@ export interface RemovedTrackInfo {
   title: string
   artist: string | null
   path: string
+}
+
+export interface TrackEditInput {
+  title: string
+  artist: string | null
 }
 
 export interface SongLyricsLine {
@@ -92,7 +124,8 @@ export function rowToTrack(row: TrackRow): Track {
     artist: row.artist,
     durationSec: row.duration_sec,
     sourceId: row.source_id,
-    playbackUrl: trackPlaybackUrl(row.id)
+    playbackUrl: trackPlaybackUrl(row.id),
+    identified: Boolean(row.mb_recording_id)
   }
 }
 
@@ -103,7 +136,15 @@ export function rowToTrackDetail(row: TrackRow): TrackDetail {
     size: row.size,
     modifiedAt: row.modified_at,
     md5: row.md5,
-    remoteId: row.remote_id
+    remoteId: row.remote_id,
+    album: row.album ?? null,
+    coverUrl: row.cover_url ?? null,
+    mbRecordingId: row.mb_recording_id ?? null,
+    mbReleaseId: row.mb_release_id ?? null,
+    mbArtistId: row.mb_artist_id ?? null,
+    mbScore: row.mb_score ?? null,
+    identifiedAt: row.mb_identified_at ?? null,
+    identified: row.mb_recording_id ? true : false
   }
 }
 
@@ -124,6 +165,60 @@ interface SongMetaDbRow {
   found: number
   reason: string | null
   updated_at: number
+}
+
+/** 任务摘要行：列表/详情读取用，不含 prompt/path/source/result_json 等大字段。 */
+export interface SongInfoTaskSummaryRow {
+  id: string
+  track_id: string | null
+  title: string
+  artist: string | null
+  model: string
+  status: string
+  started_at: number
+  finished_at: number | null
+  tool_call_count: number
+  current_tool: string | null
+  message: string | null
+}
+
+/** 完整任务行：仅重试记录读取用（含原始请求与结果快照）。 */
+export interface SongInfoTaskRow extends SongInfoTaskSummaryRow {
+  prompt: string
+  path: string
+  source: string
+  result_json: string | null
+}
+
+export interface SongInfoTaskInput {
+  trackId: string | null
+  prompt: string
+  path: string
+  title: string
+  artist: string | null
+  source: string
+  model: string
+}
+
+/** 摘要读取投影：不含 prompt/path/source/result_json，摘要不携带原始请求与结果。 */
+const SONG_INFO_TASK_SUMMARY_COLUMNS =
+  'id, track_id, title, artist, model, status, started_at, finished_at, tool_call_count, current_tool, message'
+const SONG_INFO_TASK_COLUMNS = `${SONG_INFO_TASK_SUMMARY_COLUMNS}, prompt, path, source, result_json`
+
+function songInfoTaskFromRow(row: SongInfoTaskSummaryRow): SongInfoTask {
+  return {
+    id: row.id,
+    trackId: row.track_id,
+    title: row.title,
+    artist: row.artist,
+    model: row.model,
+    status: row.status as SongInfoTaskStatus,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    toolCallCount: row.tool_call_count,
+    currentTool: row.current_tool,
+    message: row.message
+  }
 }
 
 function songMetaFromRow(row: SongMetaDbRow): SongMeta {
@@ -155,10 +250,29 @@ function songMetaFromRow(row: SongMetaDbRow): SongMeta {
   }
 }
 
+/** AI 补全字段校验：与手动编辑同一套限制（≤500 字符、无空字符）；不合规一律忽略而非报错。 */
+function sanitizeAiMetaValue(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > 500 || trimmed.includes('\0')) return null
+  return trimmed
+}
+
+/** 识别结果字段校验：默认 ≤500 字符（与手动编辑一致），封面地址放宽到 2000；空值返回 null。 */
+function cleanIdentificationText(value: unknown, maxLength = 500): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > maxLength || trimmed.includes('\0')) return null
+  return trimmed
+}
+
 export class LibraryService {
   private lastSyncToken = Date.now()
+  private readonly pendingLocalDeletes = new Set<string>()
 
-  constructor(private readonly db: LibraryDatabase) {}
+  constructor(private readonly db: LibraryDatabase) {
+    this.db.exec(`CREATE TABLE IF NOT EXISTS local_track_delete_intents (track_id TEXT PRIMARY KEY, path TEXT NOT NULL, created_at INTEGER NOT NULL)`)
+  }
 
   createSyncToken(): number {
     this.lastSyncToken = Math.max(Date.now(), this.lastSyncToken + 1)
@@ -167,8 +281,7 @@ export class LibraryService {
 
   getTrackRow(id: string): TrackRow | null {
     const row = this.db.prepare(`
-      SELECT id, source_id, remote_id, path, title, artist, duration_sec, size,
-             modified_at, md5, is_deleted
+      SELECT ${TRACK_COLUMNS}
       FROM tracks
       WHERE id = ? AND is_deleted = 0
     `).get(id) as TrackRow | undefined
@@ -193,7 +306,8 @@ export class LibraryService {
     sourceId: string,
     offset: number,
     limit: number,
-    search = ''
+    search = '',
+    identified: 'all' | 'identified' | 'unidentified' = 'all'
   ): TracksPage {
     const trimmed = search.trim()
     const params: Array<string | number> = []
@@ -203,9 +317,12 @@ export class LibraryService {
       params.push(sourceId)
     }
     if (trimmed) {
-      where += ' AND title LIKE ? ESCAPE \'\\\''
-      params.push(`%${trimmed.replace(/[%_\\]/g, char => `\\${char}`)}%`)
+      where += ' AND (title LIKE ? ESCAPE \'\\\' OR artist LIKE ? ESCAPE \'\\\')'
+      const pattern = `%${trimmed.replace(/[%_\\]/g, char => `\\${char}`)}%`
+      params.push(pattern, pattern)
     }
+    if (identified === 'identified') where += ' AND mb_recording_id IS NOT NULL'
+    else if (identified === 'unidentified') where += ' AND mb_recording_id IS NULL'
 
     const totalRow = this.db.prepare(
       `SELECT COUNT(*) AS count FROM tracks WHERE ${where}`
@@ -213,8 +330,7 @@ export class LibraryService {
 
     params.push(limit, offset)
     const rows = this.db.prepare(`
-      SELECT id, source_id, remote_id, path, title, artist, duration_sec, size,
-             modified_at, md5, is_deleted
+      SELECT ${TRACK_COLUMNS}
       FROM tracks
       WHERE ${where}
       ORDER BY title COLLATE NOCASE ASC
@@ -237,8 +353,7 @@ export class LibraryService {
       params.push(sourceId)
     }
     const rows = this.db.prepare(`
-      SELECT id, source_id, remote_id, path, title, artist, duration_sec, size,
-             modified_at, md5, is_deleted
+      SELECT ${TRACK_COLUMNS}
       FROM tracks
       WHERE ${where}
       ORDER BY title COLLATE NOCASE ASC
@@ -246,20 +361,34 @@ export class LibraryService {
     return rows.map(rowToTrack)
   }
 
+  upsertLocalTracksBatch(filePaths: string[]): void {
+    runInTransaction(this.db, () => {
+      for (const filePath of filePaths) this.upsertLocalTrack(filePath)
+    })
+  }
+
   upsertLocalTrack(filePath: string): Track {
     const now = Date.now()
     const title = basename(filePath, extname(filePath))
     const existing = this.db.prepare(`
-      SELECT id FROM tracks WHERE source_id = 'local' AND path = ? LIMIT 1
-    `).get(filePath) as { id: string } | undefined
+      SELECT ${TRACK_COLUMNS}
+      FROM tracks WHERE source_id = 'local' AND path = ? LIMIT 1
+    `).get(filePath) as TrackRow | undefined
 
     if (existing) {
-      this.db.prepare(`
-        UPDATE tracks SET title = ?, updated_at = ?, is_deleted = 0 WHERE id = ?
-      `).run(title, now, existing.id)
-      const row = this.getTrackRow(existing.id)
-      if (!row) throw new Error('无法更新本地曲目。')
-      return rowToTrack(row)
+      // The scanner only refreshes presence. User-edited title/artist belong to
+      // the library row, not the filename, and must survive every later scan.
+      // A completed delete leaves a persistent tombstone: stale scan batches
+      // cannot revive it unless the real file has actually been restored.
+      const deleting = this.db.prepare('SELECT 1 FROM local_track_delete_intents WHERE track_id = ?').get(existing.id)
+      const canUpsert = !deleting && !this.pendingLocalDeletes.has(filePath) &&
+        (existing.is_deleted === 0 || canRestoreLocalTrackFile(filePath))
+      if (canUpsert) {
+        this.db.prepare(`
+          UPDATE tracks SET updated_at = ?, is_deleted = 0 WHERE id = ?
+        `).run(now, existing.id)
+      }
+      return rowToTrack(existing)
     }
 
     const id = randomUUID()
@@ -272,6 +401,169 @@ export class LibraryService {
     const row = this.getTrackRow(id)
     if (!row) throw new Error('无法保存本地曲目。')
     return rowToTrack(row)
+  }
+
+  /**
+   * 保存 MusicBrainz 识别结果：标题/艺术家（缺省时保留原值）、专辑、封面地址、
+   * recording/release/artist id 与搜索分数，并打上识别时间。
+   * 只改音乐库记录，不写音频文件标签。
+   */
+  applyIdentification(id: string, input: TrackIdentification): TrackDetail {
+    const row = this.getTrackRow(id)
+    if (!row || row.source_id !== 'local') throw new Error('本地曲目不存在或已被删除。')
+    if (this.pendingLocalDeletes.has(row.path)) {
+      throw new Error('该曲目正在移入废纸篓，不能同时保存识别结果。')
+    }
+    const recordingId = (input.recordingId ?? '').trim()
+    if (!recordingId) throw new Error('缺少 MusicBrainz 录音 id。')
+
+    const title = cleanIdentificationText(input.title) ?? row.title
+    const artist = cleanIdentificationText(input.artist) ?? row.artist
+    const album = cleanIdentificationText(input.album)
+    const coverUrl = cleanIdentificationText(input.coverUrl, 2000)
+    const releaseId = cleanIdentificationText(input.releaseId)
+    const artistId = cleanIdentificationText(input.artistId)
+    const score = Number.isFinite(input.score) ? Math.round(Number(input.score)) : null
+
+    const result = this.db.prepare(`
+      UPDATE tracks
+      SET title = ?, artist = ?, album = ?, cover_url = ?,
+          mb_recording_id = ?, mb_release_id = ?, mb_artist_id = ?, mb_score = ?,
+          mb_identified_at = ?, updated_at = ?
+      WHERE id = ? AND source_id = 'local' AND is_deleted = 0
+    `).run(title, artist, album, coverUrl, recordingId, releaseId, artistId, score,
+      Date.now(), Date.now(), id)
+    if (Number(result.changes) !== 1) throw new Error('本地曲目不存在或已被删除。')
+    const updated = this.getTrackDetail(id)
+    if (!updated) throw new Error('无法读取更新后的本地曲目。')
+    return updated
+  }
+
+  async updateLocalTrack(id: string, input: TrackEditInput): Promise<TrackDetail> {
+    if (!input || typeof input !== 'object' || typeof input.title !== 'string' ||
+        (input.artist !== null && typeof input.artist !== 'string')) {
+      throw new Error('标题必须是字符串，艺术家必须是字符串或 null。')
+    }
+    const title = input.title.trim()
+    const artist = input.artist?.trim() || null
+    if (!title) throw new Error('标题不能为空。')
+    if (title.length > 500 || (artist?.length ?? 0) > 500) {
+      throw new Error('标题和艺术家不能超过 500 个字符。')
+    }
+    if (title.includes('\0') || artist?.includes('\0')) {
+      throw new Error('标题和艺术家不能包含空字符。')
+    }
+
+    const row = this.getTrackRow(id)
+    if (!row || row.source_id !== 'local') throw new Error('本地曲目不存在或已被删除。')
+    if (this.pendingLocalDeletes.has(row.path)) {
+      throw new Error('该曲目正在移入废纸篓，不能同时编辑。')
+    }
+    await validateLocalTrackFile(row.path, false)
+    if (this.pendingLocalDeletes.has(row.path)) {
+      throw new Error('该曲目正在移入废纸篓，不能同时编辑。')
+    }
+
+    const result = this.db.prepare(`
+      UPDATE tracks SET title = ?, artist = ?, updated_at = ?
+      WHERE id = ? AND source_id = 'local' AND is_deleted = 0
+    `).run(title, artist, Date.now(), id)
+    if (Number(result.changes) !== 1) throw new Error('本地曲目不存在或已被删除。')
+    const updated = this.getTrackDetail(id)
+    if (!updated) throw new Error('无法读取更新后的本地曲目。')
+    return updated
+  }
+
+  /**
+   * 用 AI 检索结果补全曲目元数据（同一次检索，不额外调用模型）：
+   * - 标题仅当仍等于路径文件名（去扩展名，即导入时的默认标题）时才替换；
+   * - 艺术家仅当当前为空时才填入；
+   * - 仅本地曲目；已删除或有删除意图的曲目不更新；不触碰音频文件。
+   * WHERE 里比对读取到的当前值（title/artist），检索期间用户手动改过的字段不会被覆盖。
+   * 返回是否真的写入了字段。
+   */
+  fillTrackMetaFromAi(trackId: string, aiTitle: unknown, aiArtist: unknown): boolean {
+    const title = sanitizeAiMetaValue(aiTitle)
+    const artist = sanitizeAiMetaValue(aiArtist)
+    if (!title && !artist) return false
+
+    const row = this.getTrackRow(trackId) // 已过滤 is_deleted = 0
+    if (!row || row.source_id !== 'local') return false
+    if (this.pendingLocalDeletes.has(row.path)) return false
+    const deleting = this.db.prepare(
+      'SELECT 1 FROM local_track_delete_intents WHERE track_id = ? LIMIT 1'
+    ).get(trackId)
+    if (deleting) return false
+
+    const nextTitle = title && row.title === basename(row.path, extname(row.path)) ? title : null
+    const nextArtist = artist && !row.artist?.trim() ? artist : null
+    if (!nextTitle && !nextArtist) return false
+
+    const info = this.db.prepare(`
+      UPDATE tracks
+      SET title = CASE WHEN ? IS NULL THEN title ELSE ? END,
+          artist = CASE WHEN ? IS NULL THEN artist ELSE ? END,
+          updated_at = ?
+      WHERE id = ? AND source_id = 'local' AND is_deleted = 0
+        AND title = ? AND artist IS ?
+        AND NOT EXISTS (SELECT 1 FROM local_track_delete_intents WHERE track_id = tracks.id)
+    `).run(nextTitle, nextTitle, nextArtist, nextArtist, Date.now(), trackId, row.title, row.artist)
+    return Number(info.changes) > 0
+  }
+
+  async deleteLocalTrack(id: string): Promise<TrackDetail> {
+    const row = this.getTrackRow(id)
+    if (!row || row.source_id !== 'local') throw new Error('本地曲目不存在或已被删除。')
+    if (this.pendingLocalDeletes.has(row.path)) {
+      throw new Error('该曲目正在移入废纸篓，请稍后重试。')
+    }
+
+    // Set before the first await so scanner upserts cannot refresh this row
+    // while the filesystem operation is in flight.
+    this.pendingLocalDeletes.add(row.path)
+    try {
+      const before = await validateLocalTrackFile(row.path, false)
+      // Close the async validation window: do not trash a replaced or modified
+      // file based on stale metadata from the first check.
+      const current = validateLocalTrackFileSync(row.path, false)
+      if (!sameLocalTrackFile(before, current)) {
+        throw new Error('本地音频文件在操作期间已变化，请刷新后重试。')
+      }
+
+      // Intent and tombstone are committed together; an interrupted operation
+      // leaves an intent that blocks automatic resurrection until inspected.
+      runInTransaction(this.db, () => {
+        this.db.prepare('INSERT INTO local_track_delete_intents (track_id, path, created_at) VALUES (?, ?, ?)').run(id, row.path, Date.now())
+        const marked = this.db.prepare(`
+          UPDATE tracks SET is_deleted = 1, updated_at = ?
+          WHERE id = ? AND source_id = 'local' AND is_deleted = 0
+        `).run(Date.now(), id)
+        if (Number(marked.changes) !== 1) throw new Error('本地曲目不存在或已被删除。')
+      })
+
+      try {
+        await shell.trashItem(current.path)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        let unchanged = false
+        try { unchanged = sameLocalTrackFile(current, validateLocalTrackFileSync(row.path, false)) } catch { /* outcome uncertain */ }
+        if (!unchanged) {
+          throw new Error(`移入废纸篓的结果不确定，曲库记录暂时隐藏，请检查文件和废纸篓：${message}`)
+        }
+        runInTransaction(this.db, () => {
+          this.db.prepare('UPDATE tracks SET is_deleted = 0, updated_at = ? WHERE id = ?').run(Date.now(), id)
+          this.db.prepare('DELETE FROM local_track_delete_intents WHERE track_id = ?').run(id)
+        })
+        throw new Error(`移入废纸篓失败，曲库索引未删除：${message}`)
+      }
+      this.db.prepare('DELETE FROM local_track_delete_intents WHERE track_id = ?').run(id)
+
+      // Associations (playlists, favorites, history, queue) deliberately stay
+      // intact; normal track queries hide the soft-deleted row.
+      return rowToTrackDetail(row)
+    } finally {
+      this.pendingLocalDeletes.delete(row.path)
+    }
   }
 
   upsertCloudTrack(sourceId: 'baidu' | 'quark', entry: CloudEntry, syncToken: number): CloudUpsertResult {
@@ -587,8 +879,7 @@ export class LibraryService {
 
   listPlaylistTracks(playlistId: string): Track[] {
     const rows = this.db.prepare(`
-      SELECT t.id, t.source_id, t.remote_id, t.path, t.title, t.artist, t.duration_sec,
-             t.size, t.modified_at, t.md5, t.is_deleted
+      SELECT ${TRACK_COLUMNS_T}
       FROM playlist_tracks pt
       JOIN tracks t ON t.id = pt.track_id
       WHERE pt.playlist_id = ? AND t.is_deleted = 0
@@ -650,8 +941,7 @@ export class LibraryService {
 
   listFavoriteTracks(): Track[] {
     const rows = this.db.prepare(`
-      SELECT t.id, t.source_id, t.remote_id, t.path, t.title, t.artist, t.duration_sec,
-             t.size, t.modified_at, t.md5, t.is_deleted
+      SELECT ${TRACK_COLUMNS_T}
       FROM favorites f
       JOIN tracks t ON t.id = f.track_id
       WHERE t.is_deleted = 0
@@ -806,6 +1096,25 @@ export class LibraryService {
     const title = input.title.trim() || path
     if (!path || !title) throw new Error('歌曲路径或标题不能为空。')
     const now = Date.now()
+    if (!input.found) {
+      // 新检索未找到时保留此前的成功缓存：不覆盖、不删除，仅返回本次结果（不落库），响应语义不变。
+      const existing = this.getSongMetaByPath(path)
+      if (existing && existing.found) {
+        return {
+          id: existing.id,
+          path,
+          title,
+          intro: input.intro,
+          lyrics: input.lyricsBilingual.length > 0 ? input.lyricsBilingual : input.lyrics,
+          lyricsBilingual: input.lyricsBilingual,
+          source: input.source,
+          model: input.model,
+          found: false,
+          reason: input.reason,
+          updatedAt: now
+        }
+      }
+    }
     const id = randomUUID()
     const lyricsBilingual = JSON.stringify(input.lyricsBilingual)
     this.db.prepare(`
@@ -854,6 +1163,134 @@ export class LibraryService {
       LIMIT 1
     `).get(value, value, value) as SongMetaDbRow | undefined
     return row ? songMetaFromRow(row) : null
+  }
+
+  private getSongMetaByPath(path: string): SongMeta | null {
+    const row = this.db.prepare(`
+      SELECT id, path, title, intro, lyrics, lyrics_bilingual, source, model, found, reason, updated_at
+      FROM song_meta WHERE path = ? LIMIT 1
+    `).get(path) as SongMetaDbRow | undefined
+    return row ? songMetaFromRow(row) : null
+  }
+
+  // ---- 歌曲检索任务（song_info_tasks）持久化 ----
+
+  insertSongInfoTask(input: SongInfoTaskInput): SongInfoTask {
+    const id = randomUUID()
+    const now = Date.now()
+    this.db.prepare(`
+      INSERT INTO song_info_tasks (
+        id, track_id, prompt, path, title, artist, source, model, status, started_at,
+        finished_at, tool_call_count, current_tool, message, result_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, NULL, 0, NULL, NULL, NULL)
+    `).run(
+      id,
+      input.trackId,
+      input.prompt,
+      input.path,
+      input.title,
+      input.artist,
+      input.source,
+      input.model,
+      now
+    )
+    const task = this.getSongInfoTask(id)
+    if (!task) throw new Error('无法创建检索任务。')
+    return task
+  }
+
+  getSongInfoTask(id: string): SongInfoTask | null {
+    const row = this.db.prepare(`
+      SELECT ${SONG_INFO_TASK_SUMMARY_COLUMNS} FROM song_info_tasks WHERE id = ? LIMIT 1
+    `).get(id) as SongInfoTaskSummaryRow | undefined
+    return row ? songInfoTaskFromRow(row) : null
+  }
+
+  getSongInfoTaskRow(id: string): SongInfoTaskRow | null {
+    const row = this.db.prepare(`
+      SELECT ${SONG_INFO_TASK_COLUMNS} FROM song_info_tasks WHERE id = ? LIMIT 1
+    `).get(id) as SongInfoTaskRow | undefined
+    return row ?? null
+  }
+
+  /** 全部运行中 + 最近 100 条已结束（按结束时间倒序；rowid 作稳定 tie-breaker）。 */
+  listSongInfoTasks(): SongInfoTask[] {
+    const running = this.db.prepare(`
+      SELECT ${SONG_INFO_TASK_SUMMARY_COLUMNS} FROM song_info_tasks
+      WHERE status = 'running' ORDER BY started_at DESC, rowid DESC
+    `).all() as unknown as SongInfoTaskSummaryRow[]
+    const finished = this.db.prepare(`
+      SELECT ${SONG_INFO_TASK_SUMMARY_COLUMNS} FROM song_info_tasks
+      WHERE status != 'running' ORDER BY finished_at DESC, rowid DESC LIMIT 100
+    `).all() as unknown as SongInfoTaskSummaryRow[]
+    return [...running, ...finished].map(songInfoTaskFromRow)
+  }
+
+  findRunningSongInfoTaskByTrack(trackId: string): SongInfoTask | null {
+    const row = this.db.prepare(`
+      SELECT ${SONG_INFO_TASK_SUMMARY_COLUMNS} FROM song_info_tasks
+      WHERE track_id = ? AND status = 'running' ORDER BY started_at DESC, rowid DESC LIMIT 1
+    `).get(trackId) as SongInfoTaskSummaryRow | undefined
+    return row ? songInfoTaskFromRow(row) : null
+  }
+
+  updateSongInfoTaskProgress(id: string, toolCallCount: number, currentTool: string | null): void {
+    this.db.prepare(`
+      UPDATE song_info_tasks SET tool_call_count = ?, current_tool = ?
+      WHERE id = ? AND status = 'running'
+    `).run(toolCallCount, currentTool, id)
+  }
+
+  /** 仅 running → 终态；返回是否实际转换（并发安全）。 */
+  finishSongInfoTask(
+    id: string,
+    status: SongInfoTaskStatus,
+    finishedAt: number,
+    message: string | null,
+    resultJson: string | null
+  ): boolean {
+    const info = this.db.prepare(`
+      UPDATE song_info_tasks
+      SET status = ?, finished_at = ?, message = ?, result_json = ?, current_tool = NULL
+      WHERE id = ? AND status = 'running'
+    `).run(status, finishedAt, message, resultJson, id)
+    return info.changes > 0
+  }
+
+  setSongInfoTaskMessage(id: string, message: string): void {
+    this.db.prepare('UPDATE song_info_tasks SET message = ? WHERE id = ?').run(message, id)
+  }
+
+  /** 删除已结束任务（running 不删）；不影响 song_meta 缓存。 */
+  deleteSongInfoTask(id: string): boolean {
+    const info = this.db.prepare(`
+      DELETE FROM song_info_tasks WHERE id = ? AND status != 'running'
+    `).run(id)
+    return info.changes > 0
+  }
+
+  /** 上一进程遗留的 running 任务不可能继续，标记为 interrupted。 */
+  interruptRunningSongInfoTasks(now: number, message: string): number {
+    const info = this.db.prepare(`
+      UPDATE song_info_tasks
+      SET status = 'interrupted', finished_at = ?, message = ?, current_tool = NULL
+      WHERE status = 'running'
+    `).run(now, message)
+    return Number(info.changes)
+  }
+
+  /** 任务结果快照（原始检索结果）；无快照或损坏返回 null。 */
+  getSongInfoTaskResult(id: string): SongMeta | null {
+    const row = this.db.prepare('SELECT result_json FROM song_info_tasks WHERE id = ? LIMIT 1').get(id) as
+      | { result_json: string | null }
+      | undefined
+    if (!row?.result_json) return null
+    try {
+      const parsed = JSON.parse(row.result_json) as SongMeta
+      return parsed && typeof parsed === 'object' && typeof parsed.title === 'string' ? parsed : null
+    } catch {
+      return null
+    }
   }
 }
 

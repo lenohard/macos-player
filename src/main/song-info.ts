@@ -1,12 +1,21 @@
 import { readFile } from 'fs/promises'
 import { basename, extname } from 'path'
+import { DEFAULT_AI_MODEL } from '../shared/ai-defaults'
+import type { SongInfoMeta, SongInfoTask, SongInfoToolStatus } from '../shared/ipc'
 import type { LibraryService, SongLyricsLine, SongMeta } from './library'
+import { SongInfoTaskManager } from './song-info-tasks'
 
 // song-info 通过本地 pi-web 服务（https://github.com/agegr/pi-web）联网检索歌曲资料。
 // corner 不内嵌 pi SDK、不存任何 key：模型/鉴权由 pi-web 侧统一（共享 ~/.pi/agent）。
 // 服务地址和默认模型从 AiConfig 读取（用户可在 AI 设置页配置）。
 
 const AGENT_TIMEOUT_MS = 240_000
+// 取消时中断远端会话的有界超时
+const REMOTE_ABORT_TIMEOUT_MS = 5000
+// 取消时尚未拿到 sessionId 时，等待会话建立的宽限期
+const SESSION_WAIT_MS = 3000
+const CANCEL_MESSAGE = '已取消'
+const CANNOT_CONFIRM_REMOTE_MESSAGE = '已取消本地任务，但无法确认远端已停止。'
 // cwd 属于 pi-web 服务端，不能使用客户端本机路径；检索会话使用服务端临时目录。
 const PI_WEB_SESSION_CWD = '/tmp'
 type ConfigGetter = () => { piWebUrl: string; defaultModel: string; songInfoPrompt?: string }
@@ -23,20 +32,35 @@ const DEFAULT_SONG_INFO_PROMPT = [
   '',
   '【最终输出格式 — 程序按此解析入库，极其重要】',
   '全部搜索完成后，只输出一行 JSON：无解释、无前后缀、无 Markdown 代码围栏。字段固定为：',
-  '{"found":true,"intro":"歌曲介绍","lyrics":"完整歌词","lyricsBilingual":[],"reason":""}',
+  '{"found":true,"title":"歌曲标题","artist":"艺术家","intro":"歌曲介绍","lyrics":"完整歌词","lyricsBilingual":[],"reason":""}',
   '- found (boolean)：是否成功找到歌曲信息',
+  '- title (string)：歌曲标题（检索到的官方/通行写法）；无法确认时返回空字符串，禁止编造',
+  '- artist (string)：艺术家/歌手名；无法确认时返回空字符串，禁止编造',
   '- intro (string)：歌曲介绍（背景、歌手、专辑等）；无则空字符串',
   '- lyrics (string)：完整歌词，行间用 \\n 分隔（中文歌曲用此字段）',
   '- lyricsBilingual (array)：外语歌曲逐行 {"original":"原文","translated":"中文翻译"}；中文歌曲为空数组',
   '- reason (string)：found=false 时填具体原因；true 时为空字符串',
   '',
-  '无法确认歌曲或歌词时返回 {"found":false,"intro":"","lyrics":"","lyricsBilingual":[],"reason":"具体原因"}。',
+  '无法确认歌曲或歌词时返回 {"found":false,"title":"","artist":"","intro":"","lyrics":"","lyricsBilingual":[],"reason":"具体原因"}。',
   '',
   '用户请求：{query}'
 ].join('\n')
 
+// 自定义提示词同样必须带上 title/artist：程序按固定字段解析，缺字段就无法补全曲目标题与艺术家。
+const CUSTOM_PROMPT_META_SUFFIX = [
+  '',
+  '【附加输出要求 — 程序按此解析入库，必须遵守】',
+  '最终输出的那行 JSON 除上述字段外，必须额外包含 title 与 artist 两个字符串字段：',
+  '{"found":true,"title":"歌曲标题","artist":"艺术家/歌手名",…其余字段照旧}',
+  '- 仅在确认检索到的就是这首歌时填写；无法确认或查不到时返回空字符串 ""，禁止编造或猜测。',
+  '- found=false 时 title 与 artist 同样必须存在且为空字符串。'
+].join('\n')
+
 function piWebUnavailableError(base: string, detail: string): Error {
-  return new Error(`pi-web 服务不可达（${base}）。请先运行 npx @agegr/pi-web 启动本地服务后重试。${detail ? ` 详情：${detail}` : ''}`)
+  return new SongInfoError(
+    `pi-web 服务不可达（${base}）。请先运行 npx @agegr/pi-web 启动本地服务后重试。${detail ? ` 详情：${detail}` : ''}`,
+    'network'
+  )
 }
 
 function isAbortError(error: unknown): boolean {
@@ -44,13 +68,89 @@ function isAbortError(error: unknown): boolean {
 }
 
 function isNetworkError(error: unknown): boolean {
-  // fetch 网络层失败（ECONNREFUSED / ENOTFOUND 等）抛 TypeError，原因在 cause.code
-  return error instanceof TypeError && Boolean((error as { cause?: { code?: string } }).cause?.code)
+  // fetch 网络层失败（ECONNREFUSED / ENOTFOUND 等）由 undici 抛 TypeError('fetch failed')。
+  // 原因在 cause，但形态不稳（有时带 code、有时 AggregateError、有时无 code），故以 TypeError 为准。
+  return error instanceof TypeError
 }
+
+/** 用户取消：不落缓存、不写任务快照，不标记为失败。 */
+class SongInfoCanceledError extends Error {
+  constructor() {
+    super('已取消。')
+    this.name = 'SongInfoCanceledError'
+  }
+}
+
+type SongInfoErrorKind = 'timeout' | 'model' | 'auth' | 'network' | 'other'
+
+/** 带分类标签的错误：message 保持 REST/CLI 原始契约不变，任务摘要按 kind 归类为通用提示。 */
+class SongInfoError extends Error {
+  constructor(message: string, readonly kind: SongInfoErrorKind = 'other') {
+    super(message)
+    this.name = 'SongInfoError'
+  }
+}
+
+/** 任务摘要消息：按错误分类给固定通用可操作提示，绝不落原始上游/诊断报文。 */
+function taskErrorMessage(error: unknown): string {
+  const kind = error instanceof SongInfoError ? error.kind : 'other'
+  switch (kind) {
+    case 'timeout':
+      return '检索超时，请稍后重试。'
+    case 'model':
+      return '模型不可用，请在 AI 设置中更换模型后重试。'
+    case 'auth':
+      return 'pi-web 认证失败，请检查服务配置后重试。'
+    case 'network':
+      return '无法连接 pi-web。请检查大模型设置中的地址、网络和服务状态后重试。'
+    default:
+      return '检索失败，请稍后重试。'
+  }
+}
+
+/** 检索发起时绑定的远端会话：base 不可变，取消后中断永远打原服务。 */
+interface SessionRef {
+  sessionId: string
+  base: string
+}
+
+interface RunHandle {
+  controller: AbortController
+  canceled: boolean
+  session: SessionRef | null
+  sessionReady: Promise<SessionRef | null>
+  resolveSession: (session: SessionRef | null) => void
+  remoteStopped: boolean
+}
+
+function createRunHandle(): RunHandle {
+  let resolveSession!: (session: SessionRef | null) => void
+  const sessionReady = new Promise<SessionRef | null>(resolve => {
+    resolveSession = resolve
+  })
+  return {
+    controller: new AbortController(),
+    canceled: false,
+    session: null,
+    sessionReady,
+    resolveSession,
+    remoteStopped: false
+  }
+}
+
+/** 从 prompt 提取歌手（任务摘要展示用）。 */
+function promptArtist(prompt: string): string | null {
+  const match = prompt.match(/(?:歌手|演唱者|artist)\s*[:：]\s*([^\n；;|｜]+)/i)
+  return match?.[1]?.trim() || null
+}
+
 
 export interface SongInfoResult {
   intro: string
   lyrics: string | SongLyricsLine[]
+  /** 模型确认的标题/艺术家；缺失或无法确认时为空字符串（仅用于补全曲目元数据）。 */
+  title: string
+  artist: string
   found: boolean
   reason?: string
 }
@@ -146,8 +246,10 @@ function normalizeResult(value: unknown): SongInfoResult {
 
   const lyrics = typeof lyricsSource === 'string' ? lyricsSource.trim() : lines
   const found = raw.found === true
-  if (!found) return { intro: '', lyrics: '', found: false, reason: asText(raw.reason) || '未找到可靠的歌曲信息或歌词。' }
-  return { intro, lyrics, found: true }
+  if (!found) {
+    return { intro: '', lyrics: '', title: '', artist: '', found: false, reason: asText(raw.reason) || '未找到可靠的歌曲信息或歌词。' }
+  }
+  return { intro, lyrics, title: asText(raw.title), artist: asText(raw.artist), found: true }
 }
 
 function lyricsText(lyrics: string | SongLyricsLine[]): string {
@@ -171,27 +273,32 @@ async function* readSseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<
   let buffer = ''
   let name = ''
   let dataLines: string[] = []
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    let newline: number
-    while ((newline = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, newline).replace(/\r$/, '')
-      buffer = buffer.slice(newline + 1)
-      if (!line) {
-        if (name || dataLines.length) {
-          yield { name, data: dataLines.join('\n') }
-          name = ''
-          dataLines = []
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let newline: number
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '')
+        buffer = buffer.slice(newline + 1)
+        if (!line) {
+          if (name || dataLines.length) {
+            yield { name, data: dataLines.join('\n') }
+            name = ''
+            dataLines = []
+          }
+          continue
         }
-        continue
+        if (line.startsWith('event:')) name = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''))
       }
-      if (line.startsWith('event:')) name = line.slice(6).trim()
-      else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''))
     }
+    if (name || dataLines.length) yield { name, data: dataLines.join('\n') }
+  } finally {
+    void reader.cancel().catch(() => {})
+    reader.releaseLock()
   }
-  if (name || dataLines.length) yield { name, data: dataLines.join('\n') }
 }
 
 // 从一条 message 类事件负载中提取 assistant 文本（兼容 text / content 字符串 / content 数组）。
@@ -258,22 +365,17 @@ class PiWebAgentClient {
     const body = asRecord(await res.json().catch(() => null))
     if (!res.ok || !body || body.success !== true) {
       const detail = body ? asText(body.error ?? body.message) : `HTTP ${res.status}`
-      throw new Error(`pi-web 会话创建失败：${detail || `HTTP ${res.status}`}`)
+      // 401/403 归类为认证问题；其余创建失败归类为模型/参数不可用（message 保持原始契约）
+      const kind = res.status === 401 || res.status === 403 ? 'auth' : 'model'
+      throw new SongInfoError(`pi-web 会话创建失败：${detail || `HTTP ${res.status}`}`, kind)
     }
     const sessionId = asText(body.sessionId)
     if (!sessionId) throw new Error('pi-web 未返回 sessionId。')
     return sessionId
   }
 
-  // 流式版 collectAnswer：订阅 pi-web 事件流，逐个 text_delta 累加并通过 onChunk 推送给调用方。
-  // 事件流顺序：connected → message_update(text_delta) → text_end → message_end → prompt_done / agent_end。
-  // 遇到 message_update 以外的 message / message_end 会拿到全量文本，补充覆盖以防丢字。
-  // SSE 不可靠：若未拿到完整文本，调用方应继续走 recoverAnswer。
-  // 流式版 collectAnswer：订阅 pi-web 事件流，逐个 text_delta 累加并通过 onChunk 推送给调用方。
-  // 事件流顺序：connected → message_update(text_delta) → text_end → message_end → prompt_done / agent_end。
-  // 遇到 message_update 以外的 message / message_end 会拿到全量文本，补充覆盖以防丢字。
-  // SSE 不可靠：若未拿到完整文本，调用方应继续走 recoverAnswer。
-  // onToolStatus 可选：每次工具状态变化时推一次快照（{toolCallCount, currentTool, toolCalls[]})。
+  // Stream fragments to existing CLI consumers, but use the final assistant message for parsing.
+  // Text emitted before a tool call may be progress narration, not part of the final JSON.
   private async streamAnswer(
     base: string,
     sessionId: string,
@@ -292,6 +394,7 @@ class PiWebAgentClient {
     if (!res.ok || !res.body) throw piWebUnavailableError(base, `事件流 HTTP ${res.status}`)
 
     let text = ''
+    let finalText = ''
     let lastSent = '' // 已通过 onChunk 推送过的累计文本
     const flush = (): void => {
       if (text.length > lastSent.length) {
@@ -313,9 +416,13 @@ class PiWebAgentClient {
       if (!payload) continue
       const type = event.name || asText(payload.type)
       if (type === 'prompt_error') {
-        throw new Error(`pi-web 执行失败：${asText(payload.error ?? payload.message) || '未知错误'}`)
+        throw new SongInfoError(`pi-web 执行失败：${asText(payload.error ?? payload.message) || '未知错误'}`, 'other')
       }
-      // text_delta 增量：assistantMessageEvent.delta 是片段，拼到 text 末尾后推送。
+      if (type === 'message_start' && asRecord(payload.message)?.role === 'assistant') {
+        text = ''
+        lastSent = ''
+        finalText = ''
+      }
       if (type === 'message_update') {
         const inner = asRecord(payload.assistantMessageEvent)
         const innerType = inner ? asText(inner.type) : ''
@@ -373,71 +480,110 @@ class PiWebAgentClient {
       }
       if (type === 'message_end') {
         const message = asRecord(payload.message)
-        if (message && asText(payload.stopReason ?? message.stopReason) === 'endTurn') {
-          const finalText = extractMessageText(message)
-          if (finalText && finalText.length > text.length) {
+        const reason = asText(payload.stopReason ?? message?.stopReason)
+        if (message?.role === 'assistant' && reason === 'toolUse') {
+          // Keep CLI chunks already delivered, but discard pre-tool narration from final parsing.
+          text = ''
+          lastSent = ''
+        } else if (message && (reason === 'endTurn' || reason === 'stop')) {
+          finalText = extractMessageText(message) || text
+          if (finalText.startsWith(text)) {
             text = finalText
             flush()
           }
         }
-      } else if (type === 'prompt_done') {
-        const finalText = extractMessageText(payload)
-        if (finalText && finalText.length > text.length) {
-          text = finalText
-          flush()
+      } else if (type === 'prompt_done' || type === 'agent_end') {
+        const completed = extractMessageText(payload)
+        if (completed) {
+          finalText = completed
+          if (completed.startsWith(text)) { text = completed; flush() }
         }
-        break
-      } else if (type === 'agent_end') {
         break
       }
     }
-    if (text.length > lastSent.length) {
-      onChunk(text.slice(lastSent.length))
-    }
-    return text.trim()
+    return (finalText || text).trim()
   }
 
-  private async collectAnswer(base: string, sessionId: string, signal: AbortSignal): Promise<string> {
-    let res: Response
+  // 中断远端会话（POST /api/agent/:id {type:'abort'}），有界超时。
+  // base 必须用检索发起时捕获的地址（不可变），不读当前配置，避免中途改 piWebUrl 打错服务。
+  // true = 可确认远端已停止（含会话已不存在/已回收）；false = 无法确认（网络不可达等）。
+  async abortSession(base: string, sessionId: string): Promise<boolean> {
     try {
-      res = await fetch(`${base}/api/agent/${encodeURIComponent(sessionId)}/events`, {
-        headers: { accept: 'text/event-stream' },
-        signal
+      const res = await fetch(`${base}/api/agent/${encodeURIComponent(sessionId)}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'abort' }),
+        signal: AbortSignal.timeout(REMOTE_ABORT_TIMEOUT_MS)
       })
-    } catch (error) {
-      if (isAbortError(error)) throw error
-      if (isNetworkError(error)) throw piWebUnavailableError(base, (error as Error).message)
-      throw error
+      if (res.status === 404) return true // 会话已被回收＝远端不再运行
+      return res.ok
+    } catch {
+      return false
     }
-    if (!res.ok || !res.body) throw piWebUnavailableError(base, `事件流 HTTP ${res.status}`)
+  }
 
-    // 事件序列：connected → message_update(流式增量) → message_end(stopReason) → tool_execution_* → prompt_done(含最终 message) → agent_end。
-    let text = ''
-    for await (const event of readSseEvents(res.body)) {
-      const payload = asRecord(tryParseJson(event.data))
-      if (!payload) continue
-      const type = event.name || asText(payload.type)
-      if (type === 'prompt_error') {
-        throw new Error(`pi-web 执行失败：${asText(payload.error ?? payload.message) || '未知错误'}`)
-      }
-      if (type === 'message_end') {
-        const message = asRecord(payload.message)
-        if (message && asText(payload.stopReason ?? message.stopReason) === 'endTurn') {
-          text = extractMessageText(message) || text
-        }
-      } else if (type === 'prompt_done') {
-        text = extractMessageText(payload) || text
-        break
-      } else if (type === 'agent_end') {
-        break
-      }
+  // 流式问 agent：text 增量通过 onChunk 推送，函数 resolve 时返回完整文本。
+  // options.signal：外部取消，本地立即中止；迟到结果由调用方丢弃，recover 不在取消路径执行。
+  // options.onSession：会话建立后回调（已取消时也会回调，调用方据此真正中断远端）；
+  // 携带本次检索发起时的 base，中断必须用它而非当前配置。
+  // 会话创建只受超时约束：即使已取消也等它返回，拿到 sessionId 才能中断远端。
+  async askStream(
+    modelName: string,
+    message: string,
+    onChunk: (text: string) => void,
+    onToolStatus?: (status: SongInfoToolStatus) => void,
+    options?: { signal?: AbortSignal; onSession?: (sessionId: string, base: string) => void }
+  ): Promise<string> {
+    const base = this.piWebBaseUrl()
+    const separator = modelName.indexOf(':')
+    const provider = separator > 0 ? modelName.slice(0, separator) : 'opencode-go'
+    const modelId = separator > 0 ? modelName.slice(separator + 1) : modelName
+
+    const external = options?.signal
+    if (external?.aborted) throw new SongInfoCanceledError()
+    let canceled = false
+    const deadline = new AbortController() // 仅超时约束（含会话创建）
+    const run = new AbortController() // 流式订阅：超时或外部取消都会中止
+    const onDeadline = (): void => run.abort()
+    deadline.signal.addEventListener('abort', onDeadline, { once: true })
+    const onExternalAbort = (): void => {
+      canceled = true
+      run.abort()
     }
-    return text.trim()
+    external?.addEventListener('abort', onExternalAbort, { once: true })
+    const timeout = setTimeout(() => deadline.abort(), AGENT_TIMEOUT_MS)
+    try {
+      const sessionId = await this.createSession(base, provider, modelId, message, deadline.signal)
+      options?.onSession?.(sessionId, base)
+      if (canceled) throw new SongInfoCanceledError()
+      let text = ''
+      try {
+        text = await this.streamAnswer(base, sessionId, run.signal, onChunk, onToolStatus)
+      } catch (error) {
+        if (canceled) throw new SongInfoCanceledError()
+        if (!isAbortError(error)) throw error
+      }
+      if (canceled) throw new SongInfoCanceledError()
+      if (!text) {
+        if (deadline.signal.aborted) throw new SongInfoError('歌曲联网检索超时，请稍后重试。', 'timeout')
+        text = await this.recoverAnswer(base, sessionId, run.signal)
+      }
+      if (!text) throw new Error('pi-web agent 未返回歌曲信息。')
+      return text
+    } catch (error) {
+      if (canceled || error instanceof SongInfoCanceledError) throw new SongInfoCanceledError()
+      if (isAbortError(error) || deadline.signal.aborted) throw new SongInfoError('歌曲联网检索超时，请稍后重试。', 'timeout')
+      throw error
+    } finally {
+      clearTimeout(timeout)
+      external?.removeEventListener('abort', onExternalAbort)
+    }
   }
 
   // SSE 不重放事件：若未拿到最终文本（订阅晚于完成/断流），轮询会话状态，完成后读 sessionFile JSONL 取最后一段 assistant 文本。
   private async recoverAnswer(base: string, sessionId: string, signal: AbortSignal): Promise<string> {
     for (let attempt = 0; attempt < 30; attempt++) {
+      if (signal.aborted) return ''
       const res = await fetch(`${base}/api/agent/${encodeURIComponent(sessionId)}`, { signal }).catch(() => null)
       const body = asRecord(res && res.ok ? await res.json().catch(() => null) : null)
       const state = asRecord(body?.data) ?? asRecord(body?.state) ?? body
@@ -463,158 +609,276 @@ class PiWebAgentClient {
     return text.trim()
   }
 
-  // 流式问 agent：text 增量通过 onChunk 推送，函数 resolve 时返回完整文本。
-  // onToolStatus 可选：每次工具状态变化时推一次快照。
-  // 内部复用 streamAnswer + recoverAnswer 兜底。
-  async askStream(
-    modelName: string,
-    message: string,
-    onChunk: (text: string) => void,
-    onToolStatus?: (status: { toolCallCount: number; currentTool: string; toolCalls: Array<{ name: string; status: 'planning' | 'running' | 'done' }> }) => void
-  ): Promise<string> {
-    const base = this.piWebBaseUrl()
-    const separator = modelName.indexOf(':')
-    const provider = separator > 0 ? modelName.slice(0, separator) : 'opencode-go'
-    const modelId = separator > 0 ? modelName.slice(separator + 1) : modelName
+}
 
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), AGENT_TIMEOUT_MS)
-    try {
-      const sessionId = await this.createSession(base, provider, modelId, message, controller.signal)
-      let text = ''
-      try {
-        text = await this.streamAnswer(base, sessionId, controller.signal, onChunk, onToolStatus)
-      } catch (error) {
-        if (!isAbortError(error)) throw error
-      }
-      if (!text) text = await this.recoverAnswer(base, sessionId, controller.signal)
-      if (!text) throw new Error('pi-web agent 未返回歌曲信息。')
-      return text
-    } catch (error) {
-      if (isAbortError(error)) throw new Error('歌曲联网检索超时，请稍后重试。')
-      throw error
-    } finally {
-      clearTimeout(timeout)
-    }
-  }
+interface SearchRequest {
+  trackId: string | null
+  prompt: string
+  /** 原请求指定的模型；空 = 当前默认模型 */
+  model: string
+  overrides: Partial<PromptMetadata>
+  artist: string | null
+}
 
-  async ask(modelName: string, message: string): Promise<string> {
-    const base = this.piWebBaseUrl()
-    const separator = modelName.indexOf(':')
-    const provider = separator > 0 ? modelName.slice(0, separator) : 'opencode-go'
-    const modelId = separator > 0 ? modelName.slice(separator + 1) : modelName
-
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), AGENT_TIMEOUT_MS)
-    try {
-      // 注意：prompt 在会话创建时即开始执行，SSE 必须随后立即订阅，否则只能走 recoverAnswer。
-      const sessionId = await this.createSession(base, provider, modelId, message, controller.signal)
-      let text = await this.collectAnswer(base, sessionId, controller.signal)
-      if (!text) text = await this.recoverAnswer(base, sessionId, controller.signal)
-      if (!text) throw new Error('pi-web agent 未返回歌曲信息。')
-      return text
-    } catch (error) {
-      if (isAbortError(error)) throw new Error('歌曲联网检索超时，请稍后重试。')
-      throw error
-    } finally {
-      clearTimeout(timeout)
-    }
-  }
+interface SearchCallbacks {
+  onPartialText?: (text: string) => void
+  onToolStatus?: (status: SongInfoToolStatus) => void
 }
 
 export class SongInfoService {
   private readonly agent: PiWebAgentClient
+  private readonly tasks: SongInfoTaskManager
+  private readonly running = new Map<string, RunHandle>()
 
   constructor(private readonly library: LibraryService, private readonly getConfig: ConfigGetter) {
     this.agent = new PiWebAgentClient(getConfig)
-  }
-
-  async lookup(
-    prompt: string,
-    modelId?: string,
-    overrides?: Partial<PromptMetadata>
-  ): Promise<SongMeta> {
-    const trimmedPrompt = prompt.trim()
-    if (!trimmedPrompt) throw new Error('prompt 不能为空。')
-    const parsedMetadata = promptMetadata(trimmedPrompt)
-    const metadata: PromptMetadata = {
-      path: overrides?.path?.trim() || parsedMetadata.path,
-      title: overrides?.title?.trim() || parsedMetadata.title,
-      source: overrides?.source?.trim() || parsedMetadata.source
-    }
-    const model = modelId?.trim() || this.getDefaultModel()
-    const result = await this.askAgent(trimmedPrompt, model)
-
-    return this.library.upsertSongMeta({
-      ...metadata,
-      intro: result.intro,
-      lyrics: lyricsText(result.lyrics),
-      lyricsBilingual: bilingualLines(result.lyrics),
-      model,
-      found: result.found,
-      reason: result.reason
-    })
+    this.tasks = new SongInfoTaskManager(library)
   }
 
   private getDefaultModel(): string {
-    return this.getConfig().defaultModel || 'opencode-go:qwen3.8-max'
+    return this.getConfig().defaultModel || DEFAULT_AI_MODEL
   }
 
   get(identifier: string): SongMeta | null {
     return this.library.getSongMeta(identifier)
   }
 
-  // 流式版 lookup：text 增量 → onPartialText(纯文本，未解析 JSON)，完成时 upsert 并 onResult(最终 SongMeta)。
-  // onToolStatus 可选：每次工具状态变化时推一次快照。
+  // ---- 任务 API（GUI IPC / CLI REST 共用） ----
+
+  onTasksChanged(listener: () => void): () => void {
+    return this.tasks.onTasksChanged(listener)
+  }
+
+  listTasks(): SongInfoTask[] {
+    return this.tasks.list()
+  }
+
+  getTaskResult(id: string): SongInfoMeta | null {
+    return this.tasks.getResult(id)
+  }
+
+  getTask(id: string): SongInfoTask | null {
+    return this.tasks.get(id)
+  }
+
+  /** 删除已结束任务；不影响已缓存的歌曲信息。 */
+  deleteTask(id: string): void {
+    this.tasks.delete(id)
+  }
+
+  /** 取消：本地立即中止；远端经 pi-web abort 中断；无法确认远端停止时在任务提示中区分。 */
+  async cancelTask(id: string): Promise<void> {
+    const task = this.tasks.get(id)
+    if (!task) throw new Error('任务不存在。')
+    const run = this.running.get(id)
+    if (run) run.canceled = true
+    // 先落终态（幂等）：此后迟到结果一律丢弃，不写缓存/快照
+    const changed = this.tasks.cancel(id, CANCEL_MESSAGE)
+    if (!changed || !run) return
+    run.controller.abort()
+    await this.stopRemote(id, run)
+  }
+
+  /** 以原请求重新发起（新建任务记录），使用当前默认模型；同曲目运行中任务去重。 */
+  retryTask(id: string): { requestId: string } {
+    const task = this.tasks.get(id)
+    if (!task) throw new Error('任务不存在。')
+    if (task.status === 'running') throw new Error('任务仍在进行中，无法重试。')
+    const record = this.tasks.getRecord(id)
+    if (!record) throw new Error('任务不存在。')
+    if (record.track_id) return this.lookupTrack(record.track_id)
+    const started = this.startSearch(
+      {
+        trackId: null,
+        prompt: record.prompt,
+        model: this.getDefaultModel(),
+        overrides: { path: record.path, title: record.title, source: record.source },
+        artist: record.artist
+      },
+      {}
+    )
+    void started.done.catch(() => undefined)
+    return { requestId: started.requestId }
+  }
+
+  /** GUI：按曲目发起检索；同曲目已有运行中任务时返回同一 requestId。 */
+  lookupTrack(trackId: string): { requestId: string } {
+    const detail = this.library.getTrackDetail(trackId)
+    if (!detail) throw new Error('曲目不存在。')
+    const existing = this.tasks.findRunningByTrack(trackId)
+    if (existing) return { requestId: existing.id }
+    const prompt = [
+      `歌曲名: ${detail.title}`,
+      detail.artist ? `歌手: ${detail.artist}` : ''
+    ]
+      .filter(Boolean)
+      .join('\n')
+    const started = this.startSearch(
+      {
+        trackId,
+        prompt,
+        model: this.getDefaultModel(),
+        overrides: { path: detail.path, title: detail.title, source: detail.sourceId },
+        artist: detail.artist
+      },
+      {}
+    )
+    void started.done.catch(() => undefined)
+    return { requestId: started.requestId }
+  }
+
+  // ---- 检索执行（REST 兼容入口，响应语义不变） ----
+
+  async lookup(
+    prompt: string,
+    modelId?: string,
+    overrides?: Partial<PromptMetadata>
+  ): Promise<SongMeta> {
+    return this.startSearch(
+      { trackId: null, prompt, model: modelId?.trim() || '', overrides: overrides ?? {}, artist: null },
+      {}
+    ).done
+  }
+
+  // 流式版 lookup：text 增量 → onPartialText（REST SSE 专用），完成时 upsert 并返回最终 SongMeta。
   async lookupStream(
     prompt: string,
     onPartialText: (text: string) => void,
     modelId?: string,
     overrides?: Partial<PromptMetadata>,
-    onToolStatus?: (status: { toolCallCount: number; currentTool: string; toolCalls: Array<{ name: string; status: 'planning' | 'running' | 'done' }> }) => void
+    onToolStatus?: (status: SongInfoToolStatus) => void
   ): Promise<SongMeta> {
-    const trimmedPrompt = prompt.trim()
+    return this.startSearch(
+      { trackId: null, prompt, model: modelId?.trim() || '', overrides: overrides ?? {}, artist: null },
+      { onPartialText, onToolStatus }
+    ).done
+  }
+
+  /** 建任务并执行；requestId 即任务 id，任务摘要记录本次实际使用的模型。 */
+  private startSearch(
+    request: SearchRequest,
+    callbacks: SearchCallbacks
+  ): { requestId: string; done: Promise<SongMeta> } {
+    const trimmedPrompt = request.prompt.trim()
     if (!trimmedPrompt) throw new Error('prompt 不能为空。')
     const parsedMetadata = promptMetadata(trimmedPrompt)
     const metadata: PromptMetadata = {
-      path: overrides?.path?.trim() || parsedMetadata.path,
-      title: overrides?.title?.trim() || parsedMetadata.title,
-      source: overrides?.source?.trim() || parsedMetadata.source
+      path: request.overrides.path?.trim() || parsedMetadata.path,
+      title: request.overrides.title?.trim() || parsedMetadata.title,
+      source: request.overrides.source?.trim() || parsedMetadata.source
     }
-    const model = modelId?.trim() || this.getDefaultModel()
-
-    // 把 agent 的纯文本流去重后逐步推给上层（agent 可能输出很多中间 thinking 文本，仅推送"看起来像最终答案"的稳定段）。
-    // 简化：直接逐字推送原始文本，让前端实时显示；解析失败时回退到整段解析。
-    const text = await this.agent.askStream(
-      model,
-      this.agentPrompt(trimmedPrompt),
-      chunk => { onPartialText(chunk) },
-      onToolStatus
-    )
-    const result = normalizeResult(parseJson(text))
-    return this.library.upsertSongMeta({
-      ...metadata,
-      intro: result.intro,
-      lyrics: lyricsText(result.lyrics),
-      lyricsBilingual: bilingualLines(result.lyrics),
-      model,
-      found: result.found,
-      reason: result.reason
+    const model = request.model || this.getDefaultModel()
+    const task = this.tasks.create({
+      trackId: request.trackId,
+      prompt: trimmedPrompt,
+      path: metadata.path,
+      title: metadata.title,
+      artist: request.artist ?? promptArtist(trimmedPrompt),
+      source: metadata.source,
+      model
     })
+    const run = createRunHandle()
+    this.running.set(task.id, run)
+    const done = this.execute(task.id, request.trackId, run, trimmedPrompt, model, metadata, callbacks).finally(() => {
+      this.running.delete(task.id)
+    })
+    return { requestId: task.id, done }
   }
 
-  private async askAgent(prompt: string, modelName: string): Promise<SongInfoResult> {
-    const text = await this.agent.ask(modelName, this.agentPrompt(prompt))
-    return normalizeResult(parseJson(text))
+  private async execute(
+    taskId: string,
+    trackId: string | null,
+    run: RunHandle,
+    prompt: string,
+    model: string,
+    metadata: PromptMetadata,
+    callbacks: SearchCallbacks
+  ): Promise<SongMeta> {
+    try {
+      const text = await this.agent.askStream(
+        model,
+        this.agentPrompt(prompt),
+        chunk => callbacks.onPartialText?.(chunk),
+        status => {
+          this.tasks.updateProgress(taskId, status.toolCallCount, status.currentTool || null)
+          callbacks.onToolStatus?.(status)
+        },
+        {
+          signal: run.controller.signal,
+          onSession: (sessionId, base) => {
+            run.session = { sessionId, base }
+            run.resolveSession(run.session)
+            if (run.canceled) void this.stopRemote(taskId, run)
+          }
+        }
+      )
+      if (run.canceled) {
+        // 取消后到达的迟到结果：不写缓存、不落快照。
+        // 判定以 run 内存态为准：任务行可能已被删除，不能查 DB 状态
+        throw new SongInfoCanceledError()
+      }
+      const result = normalizeResult(parseJson(text))
+      const meta = this.library.upsertSongMeta({
+        ...metadata,
+        intro: result.intro,
+        lyrics: lyricsText(result.lyrics),
+        lyricsBilingual: bilingualLines(result.lyrics),
+        model,
+        found: result.found,
+        reason: result.reason
+      })
+      if (trackId && result.found) {
+        // 同一次检索结果顺带补全曲目标题/艺术家（仅本地曲目，条件写入见 LibraryService）；
+        // 补全失败不影响已保存的歌曲资料与任务结果。
+        try {
+          this.library.fillTrackMetaFromAi(trackId, result.title, result.artist)
+        } catch (error) {
+          // 歌词已保存，但保留诊断信息以便排查元数据补全失败。
+          console.error('[song-info] Failed to update track metadata:', error)
+        }
+      }
+      this.tasks.complete(
+        taskId,
+        meta,
+        result.found ? 'succeeded' : 'not_found',
+        result.found ? null : '未找到歌曲信息。' // 摘要只写固定通用提示，具体原因仅保留在结果快照/响应中
+      )
+      return meta
+    } catch (error) {
+      // 取消判定以 run 内存态为准（任务行可能已被删除）；失败摘要只写分类通用提示
+      if (error instanceof SongInfoCanceledError || run.canceled) {
+        throw new SongInfoCanceledError()
+      }
+      this.tasks.fail(taskId, taskErrorMessage(error))
+      throw error
+    }
+  }
+
+  // 取消后中断远端会话；无法确认停止时在任务提示里区分。每 run 只真正中断一次。
+  private async stopRemote(taskId: string, run: RunHandle): Promise<void> {
+    const session =
+      run.session ?? (await Promise.race([run.sessionReady, sleep(SESSION_WAIT_MS).then(() => null)]))
+    if (run.remoteStopped) return
+    if (!session) {
+      // 会话迟迟未建立：如实标注无法确认；会话一旦建立由 onSession 补发中断
+      this.tasks.setMessage(taskId, CANNOT_CONFIRM_REMOTE_MESSAGE)
+      return
+    }
+    run.remoteStopped = true
+    // 中断打检索发起时捕获的 base（不可变），中途改 piWebUrl 不影响
+    const confirmed = await this.agent.abortSession(session.base, session.sessionId)
+    this.tasks.setMessage(taskId, confirmed ? CANCEL_MESSAGE : CANNOT_CONFIRM_REMOTE_MESSAGE)
   }
 
   private agentPrompt(prompt: string): string {
     const custom = this.getConfig().songInfoPrompt?.trim()
     if (custom) {
-      // 自定义提示词：支持 {query} 占位符；未提供时把用户请求追加到末尾
-      return custom.includes('{query}')
+      // 自定义提示词：支持 {query} 占位符；未提供时把用户请求追加到末尾。
+      // 末尾再补固定的 title/artist 输出要求，保证入库字段完整。
+      const body = custom.includes('{query}')
         ? custom.split('{query}').join(prompt)
         : `${custom}\n\n用户请求：${prompt}`
+      return `${body}${CUSTOM_PROMPT_META_SUFFIX}`
     }
     return DEFAULT_SONG_INFO_PROMPT.split('{query}').join(prompt)
   }

@@ -24,7 +24,12 @@ module.exports = defineConfig(({ mode }) => {
     },
     renderer: {
       root: 'src/renderer',
-      build: { outDir: 'out/renderer' },
+      build: {
+        outDir: 'out/renderer',
+        rollupOptions: {
+          input: resolve(__dirname, 'src/renderer/index.html')
+        }
+      },
       resolve: {
         alias: { '@shared': resolve(__dirname, 'src/shared') }
       }

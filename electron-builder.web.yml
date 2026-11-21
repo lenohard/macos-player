@@ -1,0 +1,24 @@
+appId: com.lenohard.corner.web
+productName: Corner Web
+extraMetadata:
+  main: ./out/web/main/web-service.js
+directories:
+  buildResources: build
+  output: dist/web
+files:
+  - out/web/**/*
+  - package.json
+  - '!**/.env'
+  - '!**/.env.*'
+extraResources:
+  - from: scripts/corner-cli.mjs
+    to: corner-cli.mjs
+mac:
+  icon: build/corner-web.icns
+  entitlementsInherit: build/entitlements.mac.plist
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  notarize: false
+  extendInfo:
+    LSBackgroundOnly: true
+  target: dir

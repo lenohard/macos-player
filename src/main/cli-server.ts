@@ -1,37 +1,26 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
-import { writeFileSync, unlinkSync } from 'fs'
-import { randomBytes, randomUUID, timingSafeEqual } from 'crypto'
+import { createServer, type IncomingMessage, type ServerResponse } from 'http'
+import { mkdirSync, renameSync, writeFileSync, unlinkSync } from 'fs'
+import { randomBytes, timingSafeEqual } from 'crypto'
 import { join } from 'path'
-import { app, type BrowserWindow } from 'electron'
-import {
-  PLAYBACK_REMOTE_COMMAND_CHANNEL,
-  type BaiduImportResult,
-  type PlaybackState,
-  type RemoteCommand,
-  type Track
-} from '../shared/ipc'
-import type { LibraryService } from './library'
-import type { LibrarySource } from '../shared/ipc'
+import { rowToTrack, type LibraryService, type TrackEditInput } from './library'
+import { LocalTrackFileError, validateLocalTrackFile } from './local-track-file'
+import { lookupMusicBrainz } from './musicbrainz'
+import type { BaiduImportResult, PlaybackState, RemoteCommand, Track, TrackIdentification } from '../shared/ipc'
 import type { SongInfoService } from './song-info'
-import { downloadTrack } from './download'
-import type { BaiduService } from './baidu'
-import type { WebDAVService } from './webdav'
+import { downloadTrack, type DownloadTrackDeps } from './download'
+import { audioContentType, streamLocalAudio } from './track-stream'
+import { serveWebAsset, serveWebAudio } from './web-serving'
 
-const SOURCES: LibrarySource[] = [
-  { id: 'local', name: '本地音乐', type: 'local' },
-  { id: 'baidu', name: '百度网盘', type: 'baidu' },
-  { id: 'quark', name: 'WebDAV 网盘', type: 'quark' }
-]
+const RANDOM_PLAY_MAX = 500
 
-const COMMAND_ACK_TIMEOUT_MS = 3000
-
-interface CliServerContext {
-  library: LibraryService
+interface CliServerContext extends DownloadTrackDeps {
   songInfo: SongInfoService
-  getMainWindow: () => BrowserWindow | null
-  resyncLibrary: (rootPath: string) => Promise<BaiduImportResult>
-  baidu?: BaiduService
-  webdav?: WebDAVService
+  endpointDir: string
+  desktop?: {
+    sendCommand: (command: RemoteCommand) => Promise<boolean>
+    resyncLibrary: (rootPath: string) => Promise<BaiduImportResult>
+    onLibraryChanged: () => void
+  }
 }
 
 interface CliLibrary {
@@ -43,16 +32,9 @@ interface CliLibrary {
   lastSyncStatus: string | null
 }
 
-interface PendingCommand {
-  resolve: (ok: boolean) => void
-  timer: NodeJS.Timeout
-}
-
-let server: Server | null = null
-let playbackState: PlaybackState | null = null
 let authToken: string | null = null
+let playbackState: PlaybackState | null = null
 const eventSubscribers = new Set<ServerResponse>()
-const pendingCommands = new Map<string, PendingCommand>()
 
 /** 从列表中随机抽取 count 首（Fisher–Yates 部分洗牌） */
 function pickRandomTracks<T>(source: T[], count: number): T[] {
@@ -64,62 +46,66 @@ function pickRandomTracks<T>(source: T[], count: number): T[] {
   return indices.slice(0, count).map(index => source[index])
 }
 
+/** AppleDouble 伴生文件（macOS 的 ._ 元数据文件，name 以 ._ 开头）不参与随机选曲。 */
+function isAppleDoubleTrack(track: Track): boolean {
+  return track.title.startsWith('._')
+}
+
+/** 从整个曲库随机抽 count 首（不局限搜索/分页，排除 ._ 伴生文件）。 */
+function randomLibrarySample(
+  library: LibraryService,
+  sourceId: string,
+  count: number
+): { tracks: Track[]; total: number } {
+  const pool = library.listAllTracks(sourceId).filter(track => !isAppleDoubleTrack(track))
+  return { tracks: pickRandomTracks(pool, count), total: pool.length }
+}
+
+function writeEndpointFile(path: string, value: string): void {
+  const temporary = `${path}.${process.pid}.tmp`
+  try {
+    writeFileSync(temporary, value, { mode: 0o600, encoding: 'utf8' })
+    renameSync(temporary, path)
+  } finally {
+    removeEndpointFile(temporary)
+  }
+}
+
+function removeEndpointFile(path: string): void {
+  try {
+    unlinkSync(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error('[CLI] endpoint cleanup failed:', error)
+  }
+}
+
 export function setPlaybackState(state: PlaybackState | null): void {
   playbackState = state
-  broadcast({ type: 'playback', state })
-}
-
-export function ackRemoteCommand(commandId: string): void {
-  const pending = pendingCommands.get(commandId)
-  if (!pending) return
-  clearTimeout(pending.timer)
-  pendingCommands.delete(commandId)
-  pending.resolve(true)
-}
-
-function broadcast(event: unknown): void {
-  if (eventSubscribers.size === 0) return
-  const frame = `data: ${JSON.stringify(event)}\n\n`
-  for (const res of eventSubscribers) res.write(frame)
-}
-
-function portFilePath(): string {
-  return join(app.getPath('userData'), 'cli-port')
-}
-
-function tokenFilePath(): string {
-  return join(app.getPath('userData'), 'cli-token')
-}
-
-function writePortFile(port: number): void {
-  writeFileSync(portFilePath(), String(port), 'utf8')
-}
-
-function writeTokenFile(token: string): void {
-  writeFileSync(tokenFilePath(), token, { mode: 0o600, encoding: 'utf8' })
-}
-
-function removePortFile(): void {
-  try {
-    unlinkSync(portFilePath())
-  } catch {
-    // 文件不存在，忽略
+  if (!eventSubscribers.size) return
+  const frame = `data: ${JSON.stringify({ type: 'playback', state })}\n\n`
+  for (const res of eventSubscribers) {
+    if (!res.writableNeedDrain) res.write(frame)
   }
 }
 
-function removeTokenFile(): void {
-  try {
-    unlinkSync(tokenFilePath())
-  } catch {
-    // 文件不存在，忽略
-  }
-}
+class RequestBodyTooLargeError extends Error {}
 
-function readJsonBody(req: IncomingMessage): Promise<unknown> {
+function readJsonBody(req: IncomingMessage, maxBytes = Number.POSITIVE_INFINITY): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
-    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    let bytes = 0
+    let tooLarge = false
+    req.on('data', (chunk: Buffer) => {
+      bytes += chunk.length
+      if (bytes > maxBytes) {
+        tooLarge = true
+        chunks.length = 0
+        return
+      }
+      if (!tooLarge) chunks.push(chunk)
+    })
     req.on('end', () => {
+      if (tooLarge) return reject(new RequestBodyTooLargeError('Request body too large'))
       const raw = Buffer.concat(chunks).toString('utf8')
       if (!raw.trim()) return resolve(null)
       try {
@@ -133,7 +119,7 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 function jsonReply(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'Content-Type': 'application/json' })
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
   res.end(JSON.stringify(body))
 }
 
@@ -152,7 +138,7 @@ function searchTracks(ctx: CliServerContext, query: string, limit: number): Trac
   if (!trimmed) return []
 
   const all: Track[] = []
-  const sources = ['baidu', 'local', 'quark']
+  const sources = ctx.desktop ? ['baidu', 'local', 'quark'] : ['local']
   for (const sourceId of sources) {
     try {
       const page = ctx.library.listTracksPage(sourceId, 0, limit, trimmed)
@@ -164,57 +150,47 @@ function searchTracks(ctx: CliServerContext, query: string, limit: number): Trac
   return all.slice(0, limit)
 }
 
-function sendRemoteCommand(ctx: CliServerContext, command: RemoteCommand): Promise<boolean> {
-  const win = ctx.getMainWindow()
-  if (!win || win.isDestroyed()) return Promise.resolve(false)
-  // 新建窗口刚触发时渲染进程尚未就绪，等待页面加载完成再发命令，避免消息丢失
-  if (win.webContents.isLoading()) {
-    return new Promise<boolean>(resolve => {
-      const onLoaded = (): void => {
-        win.webContents.removeListener('did-finish-load', onLoaded)
-        resolve(dispatchRemoteCommand(win, command))
-      }
-      const timeout = setTimeout(() => {
-        win.webContents.removeListener('did-finish-load', onLoaded)
-        resolve(false)
-      }, COMMAND_ACK_TIMEOUT_MS)
-      win.webContents.once('did-finish-load', () => {
-        clearTimeout(timeout)
-        onLoaded()
-      })
-    })
+/** 任务 API 的错误映射：不存在 404、进行中不允许 400、其余 500。 */
+function taskErrorStatus(message: string): number {
+  if (message === '任务不存在。') return 404
+  if (message.includes('进行中')) return 400
+  return 500
+}
+
+function localTrackMutationErrorStatus(error: unknown): number {
+  if (error instanceof LocalTrackFileError) return error.statusCode
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.includes('不存在')) return 404
+  if (message.includes('标题') || message.includes('艺术家')) return 400
+  if (message.includes('正在移入') || message.includes('已变化')) return 409
+  return 500
+}
+
+/** 解析识别结果负载；不是对象时返回 null，字段非法时抛错。 */
+function parseIdentification(value: unknown): TrackIdentification | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('识别结果格式无效。')
+  const raw = value as Record<string, unknown>
+  const recordingId = typeof raw.recordingId === 'string' ? raw.recordingId.trim() : ''
+  if (!recordingId) throw new Error('识别结果缺少 recordingId。')
+  const text = (key: string): string | null => {
+    const item = raw[key]
+    if (item === undefined || item === null) return null
+    if (typeof item !== 'string') throw new Error(`识别结果字段 ${key} 必须是字符串。`)
+    return item.trim() || null
   }
-  return dispatchRemoteCommand(win, command)
-}
-
-function dispatchRemoteCommand(win: BrowserWindow, command: RemoteCommand): Promise<boolean> {
-  const commandId = randomUUID()
-  return new Promise<boolean>(resolve => {
-    const timer = setTimeout(() => {
-      pendingCommands.delete(commandId)
-      resolve(false)
-    }, COMMAND_ACK_TIMEOUT_MS)
-    pendingCommands.set(commandId, { resolve, timer })
-    if (win.isDestroyed()) {
-      clearTimeout(timer)
-      pendingCommands.delete(commandId)
-      resolve(false)
-      return
-    }
-    try {
-      win.webContents.send(PLAYBACK_REMOTE_COMMAND_CHANNEL, { ...command, id: commandId })
-    } catch {
-      clearTimeout(timer)
-      pendingCommands.delete(commandId)
-      resolve(false)
-    }
-  })
-}
-
-function clampVolume(value: unknown): number {
-  const number = typeof value === 'number' ? value : NaN
-  if (!Number.isFinite(number)) throw new Error('音量必须是 0~1 之间的数字。')
-  return Math.min(1, Math.max(0, number))
+  const score = raw.score === undefined || raw.score === null ? null : Number(raw.score)
+  if (score !== null && !Number.isFinite(score)) throw new Error('识别结果分数必须是数字。')
+  return {
+    recordingId,
+    releaseId: text('releaseId'),
+    artistId: text('artistId'),
+    album: text('album'),
+    coverUrl: text('coverUrl'),
+    score,
+    title: text('title'),
+    artist: text('artist')
+  }
 }
 
 async function handleRequest(
@@ -226,19 +202,118 @@ async function handleRequest(
   const method = req.method ?? 'GET'
   const path = url.pathname
 
+  const read = method === 'GET' || method === 'HEAD'
+  const desktop = ctx.desktop
+  const mode = desktop ? 'desktop' : 'web'
   try {
-    // GET /health — liveness probe, no auth
+    // GET /health — liveness and instance identity, no auth
     if (method === 'GET' && path === '/health') {
-      return jsonReply(res, 200, { ok: true })
+      return jsonReply(res, 200, { ok: true, mode })
     }
 
     if (!isAuthorized(req)) {
       return jsonReply(res, 401, { error: 'Unauthorized' })
     }
+    if (desktop && !read && /^(?:\/playlists(?:\/|$)|\/favorites(?:\/|$)|\/tracks\/|\/import$|\/libraries\/update$)/.test(path)) {
+      res.once('finish', () => {
+        if (res.statusCode < 300) desktop.onLibraryChanged()
+      })
+    }
+
+    // Share Hub points only to Web; the desktop listener never serves the Web UI.
+    if (!desktop && read && path.startsWith('/web/')) {
+      return await serveWebAsset(path, req, res)
+    }
+    if (method === 'GET' && path === '/tracks') {
+      const requestedSourceId = url.searchParams.get('sourceId') ?? 'all'
+      if (!['all', 'local'].includes(requestedSourceId) && !(desktop && ['baidu', 'quark'].includes(requestedSourceId))) {
+        return jsonReply(res, 400, { error: '无效的曲目筛选条件。' })
+      }
+      // The Web library exposes only local tracks, including random selections.
+      const sourceId = desktop ? requestedSourceId : 'local'
+      const randomParam = url.searchParams.get('random')
+      if (randomParam !== null) {
+        const count = Number(randomParam)
+        if (!Number.isInteger(count) || count < 1 || count > RANDOM_PLAY_MAX) {
+          return jsonReply(res, 400, { error: `无效的随机曲目数量（1-${RANDOM_PLAY_MAX}）。` })
+        }
+        const sample = randomLibrarySample(ctx.library, sourceId, count)
+        return jsonReply(res, 200, { tracks: sample.tracks, total: sample.total, offset: 0, limit: count })
+      }
+      const offset = Number(url.searchParams.get('offset') ?? 0)
+      const limit = Number(url.searchParams.get('limit') ?? 50)
+      if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return jsonReply(res, 400, { error: '无效的曲目筛选条件。' })
+      }
+      const identifiedParam = url.searchParams.get('identified') ?? 'all'
+      if (!['all', 'identified', 'unidentified'].includes(identifiedParam)) {
+        return jsonReply(res, 400, { error: '无效的识别状态筛选条件。' })
+      }
+      return jsonReply(res, 200, ctx.library.listTracksPage(sourceId, offset, limit,
+        url.searchParams.get('q') ?? '', identifiedParam as 'all' | 'identified' | 'unidentified'))
+    }
+    const identifyMatch = /^\/tracks\/([0-9a-f-]{36})\/identify$/i.exec(path)
+    if (identifyMatch && method === 'GET') {
+      const track = ctx.library.getTrackDetail(identifyMatch[1])
+      if (!track || track.sourceId !== 'local') return jsonReply(res, 404, { error: '曲目不存在。' })
+      try {
+        const file = await validateLocalTrackFile(track.path)
+        return jsonReply(res, 200, await lookupMusicBrainz(file.path, track.title, track.artist))
+      } catch (error) {
+        return jsonReply(res, error instanceof LocalTrackFileError ? error.statusCode : 502, {
+          error: error instanceof Error ? error.message : '曲目识别失败。'
+        })
+      }
+    }
+    const trackMatch = /^\/tracks\/([0-9a-f-]{36})(\/audio)?$/i.exec(path)
+    if (trackMatch) {
+      const track = ctx.library.getTrackDetail(trackMatch[1])
+      if (!track || (!desktop && track.sourceId !== 'local')) return jsonReply(res, 404, { error: '曲目不存在。' })
+      if (!desktop && trackMatch[2] && read) {
+        return await serveWebAudio(req, res, request => streamLocalAudio(track.path, request), audioContentType(track.path))
+      }
+      if (!trackMatch[2] && method === 'GET') return jsonReply(res, 200, track)
+      if (!trackMatch[2] && method === 'PATCH') {
+        try {
+          const body = (await readJsonBody(req, 16 * 1024)) as Record<string, unknown> | null
+          const identification = parseIdentification(body?.identification)
+          if (identification) {
+            return jsonReply(res, 200, ctx.library.applyIdentification(track.id, identification))
+          }
+          if (!body || typeof body.title !== 'string' ||
+              (body.artist !== null && typeof body.artist !== 'string')) {
+            return jsonReply(res, 400, { error: '标题必须是字符串，艺术家必须是字符串或 null。' })
+          }
+          const input: TrackEditInput = { title: body.title, artist: body.artist }
+          const updated = await ctx.library.updateLocalTrack(track.id, input)
+          return jsonReply(res, 200, updated)
+        } catch (error) {
+          if (error instanceof RequestBodyTooLargeError) {
+            return jsonReply(res, 413, { error: '请求体不能超过 16 KiB。' })
+          }
+          if (error instanceof Error && error.message === 'Invalid JSON body') {
+            return jsonReply(res, 400, { error: 'Invalid JSON body' })
+          }
+          return jsonReply(res, localTrackMutationErrorStatus(error), {
+            error: error instanceof Error ? error.message : '曲目更新失败。'
+          })
+        }
+      }
+      if (!trackMatch[2] && method === 'DELETE') {
+        try {
+          const deleted = await ctx.library.deleteLocalTrack(track.id)
+          return jsonReply(res, 200, { ok: true, deleted: true, track: deleted })
+        } catch (error) {
+          return jsonReply(res, localTrackMutationErrorStatus(error), {
+            error: error instanceof Error ? error.message : '曲目删除失败。'
+          })
+        }
+      }
+    }
 
     // GET /status
     if (method === 'GET' && path === '/status') {
-      return jsonReply(res, 200, { ok: true, running: true, playback: playbackState })
+      return jsonReply(res, 200, { ok: true, running: true, playback: playbackState, mode })
     }
 
     // GET /queue — current playback queue (persisted by the player)
@@ -262,13 +337,19 @@ async function handleRequest(
       })
       res.write(`data: ${JSON.stringify({ type: 'hello', playback: playbackState })}\n\n`)
       eventSubscribers.add(res)
-      req.on('close', () => eventSubscribers.delete(res))
+      res.once('close', () => eventSubscribers.delete(res))
       return
     }
 
     // GET /sources
     if (method === 'GET' && path === '/sources') {
-      return jsonReply(res, 200, SOURCES)
+      return jsonReply(res, 200, [
+        { id: 'local', name: '本地音乐', type: 'local' },
+        ...(desktop ? [
+          { id: 'baidu', name: '百度网盘', type: 'baidu' },
+          { id: 'quark', name: 'WebDAV 网盘', type: 'quark' }
+        ] : [])
+      ])
     }
 
     // GET /libraries — 已导入的音乐库（library_roots，按 rootPath 区分）
@@ -295,19 +376,12 @@ async function handleRequest(
       if (!rootPath) {
         return jsonReply(res, 400, { error: 'Missing rootPath' })
       }
+      if (!desktop) return jsonReply(res, 404, { error: '网页服务只支持自动扫描本地音乐目录。' })
       try {
-        const result = await ctx.resyncLibrary(rootPath)
-        return jsonReply(res, 200, {
-          rootPath: result.rootPath,
-          playlistId: result.playlistId,
-          scanned: result.scanned,
-          added: result.added,
-          updated: result.updated,
-          removed: result.removed
-        })
+        const { rootPath: syncedRoot, playlistId, scanned, added, updated, removed } = await desktop.resyncLibrary(rootPath)
+        return jsonReply(res, 200, { rootPath: syncedRoot, playlistId, scanned, added, updated, removed })
       } catch (error) {
-        const message = error instanceof Error ? error.message : '同步失败'
-        return jsonReply(res, 404, { error: message })
+        return jsonReply(res, 404, { error: error instanceof Error ? error.message : '同步失败' })
       }
     }
 
@@ -324,7 +398,8 @@ async function handleRequest(
     // POST /playlists — create
     if (method === 'POST' && path === '/playlists') {
       const body = (await readJsonBody(req)) as Record<string, unknown> | null
-      const name = typeof body?.name === 'string' ? body.name : ''
+      const name = typeof body?.name === 'string' ? body.name.trim() : ''
+      if (!name) return jsonReply(res, 400, { error: '请输入歌单名称。' })
       const created = ctx.library.createPlaylist(name)
       return jsonReply(res, 201, created)
     }
@@ -401,111 +476,63 @@ async function handleRequest(
       return jsonReply(res, 200, { tracks })
     }
 
-    // POST /play
-    if (method === 'POST' && path === '/play') {
-      const body = (await readJsonBody(req)) as Record<string, unknown> | null
-      if (!body) {
-        return jsonReply(res, 400, { error: 'Missing request body' })
+    if (method === 'POST' && ['/play', '/toggle-play', '/next', '/prev', '/shuffle', '/repeat', '/volume', '/seek'].includes(path)) {
+      if (!desktop) return jsonReply(res, 409, { error: '网页端播放由当前浏览器控制。' })
+      const reply = async (command: RemoteCommand, details = {}): Promise<void> => {
+        if (!await desktop.sendCommand(command)) {
+          return jsonReply(res, 503, { ok: false, error: '桌面播放器尚未就绪，未收到命令确认。' })
+        }
+        return jsonReply(res, 200, { ok: true, ...details })
       }
+      const transport = {
+        '/toggle-play': 'togglePlay', '/next': 'next', '/prev': 'prev', '/shuffle': 'shuffle', '/repeat': 'repeat'
+      } as const
+      const action = transport[path as keyof typeof transport]
+      if (action) return await reply({ action })
 
-      // playlist play
-      if (body.playlistId) {
-        const id = String(body.playlistId)
-        let tracks = id === '__favorites__'
-          ? ctx.library.listFavoriteTracks()
-          : ctx.library.listPlaylistTracks(id)
-        if (tracks.length === 0) {
-          return jsonReply(res, 404, { error: id === '__favorites__' ? '还没有收藏任何歌曲' : 'Playlist not found or empty' })
+      const body = await readJsonBody(req) as Record<string, unknown> | null
+      if (path === '/volume') {
+        if (typeof body?.volume !== 'number' || !Number.isFinite(body.volume)) {
+          return jsonReply(res, 400, { error: 'Provide volume (0..1)' })
         }
-        // random20: 从歌单随机抽 20 首播放（与桌面端行为一致），避免大歌单塞满队列
-        if (body.mode === 'random20') {
-          tracks = pickRandomTracks(tracks, 20)
-        }
-        const sent = await sendRemoteCommand(ctx, { action: 'play', tracks })
-        return jsonReply(res, 200, { ok: sent, trackCount: tracks.length })
+        const volume = Math.max(0, Math.min(1, body.volume))
+        return await reply({ action: 'setVolume', volume }, { volume })
       }
-
-      // single track play
-      if (body.trackId) {
-        const row = ctx.library.getTrackRow(String(body.trackId))
-        if (!row) {
-          return jsonReply(res, 404, { error: 'Track not found' })
-        }
-        // Dynamically import rowToTrack to avoid circular deps
-        const { rowToTrack } = await import('./library.js')
+      if (path === '/seek') {
+        const position = typeof body?.positionSec === 'number' ? body.positionSec :
+          typeof body?.offsetSec === 'number' ? (playbackState?.positionSec ?? 0) + body.offsetSec : NaN
+        if (!Number.isFinite(position)) return jsonReply(res, 400, { error: 'Provide positionSec or offsetSec' })
+        const positionSec = Math.max(0, Math.min(playbackState?.durationSec || Infinity, position))
+        return await reply({ action: 'seek', positionSec }, { positionSec })
+      }
+      if (typeof body?.playlistId === 'string' && body.playlistId) {
+        const tracks = body.playlistId === '__favorites__'
+          ? ctx.library.listFavoriteTracks() : ctx.library.listPlaylistTracks(body.playlistId)
+        if (!tracks.length) return jsonReply(res, 404, { error: 'Playlist not found or empty' })
+        const selected = body.mode === 'random20' ? pickRandomTracks(tracks, 20) : tracks
+        return await reply({ action: 'play', tracks: selected }, { trackCount: selected.length })
+      }
+      if (typeof body?.trackId === 'string' && body.trackId) {
+        const row = ctx.library.getTrackRow(body.trackId)
+        if (!row) return jsonReply(res, 404, { error: 'Track not found' })
         const track = rowToTrack(row)
-        const sent = await sendRemoteCommand(ctx, { action: 'playSingle', track })
-        return jsonReply(res, 200, { ok: sent, track })
+        return await reply({ action: 'playSingle', track }, { track })
       }
-
-      // search & play first result
-      if (body.query) {
-        const tracks = searchTracks(ctx, String(body.query), 1)
-        if (tracks.length === 0) {
-          return jsonReply(res, 404, { error: 'No tracks found' })
+      if (typeof body?.query === 'string' && body.query.trim()) {
+        const [track] = searchTracks(ctx, body.query, 1)
+        if (!track) return jsonReply(res, 404, { error: 'No tracks found' })
+        return await reply({ action: 'playSingle', track }, { track })
+      }
+      if (body && 'random' in body) {
+        const count = body.random
+        if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > RANDOM_PLAY_MAX) {
+          return jsonReply(res, 400, { error: `无效的随机曲目数量（1-${RANDOM_PLAY_MAX}）。` })
         }
-        const sent = await sendRemoteCommand(ctx, { action: 'playSingle', track: tracks[0] })
-        return jsonReply(res, 200, { ok: sent, track: tracks[0] })
+        const { tracks } = randomLibrarySample(ctx.library, 'all', count)
+        if (!tracks.length) return jsonReply(res, 404, { error: 'No tracks found' })
+        return await reply({ action: 'play', tracks }, { trackCount: tracks.length })
       }
-
-      return jsonReply(res, 400, { error: 'Provide playlistId, trackId, or query' })
-    }
-
-    // POST /toggle-play
-    if (method === 'POST' && path === '/toggle-play') {
-      const sent = await sendRemoteCommand(ctx, { action: 'togglePlay' })
-      return jsonReply(res, 200, { ok: sent })
-    }
-
-    // POST /next
-    if (method === 'POST' && path === '/next') {
-      const sent = await sendRemoteCommand(ctx, { action: 'next' })
-      return jsonReply(res, 200, { ok: sent })
-    }
-
-    // POST /prev
-    if (method === 'POST' && path === '/prev') {
-      const sent = await sendRemoteCommand(ctx, { action: 'prev' })
-      return jsonReply(res, 200, { ok: sent })
-    }
-
-    // POST /shuffle
-    if (method === 'POST' && path === '/shuffle') {
-      const sent = await sendRemoteCommand(ctx, { action: 'shuffle' })
-      return jsonReply(res, 200, { ok: sent })
-    }
-
-    // POST /repeat
-    if (method === 'POST' && path === '/repeat') {
-      const sent = await sendRemoteCommand(ctx, { action: 'repeat' })
-      return jsonReply(res, 200, { ok: sent })
-    }
-
-    // POST /volume — body { volume: 0..1 }
-    if (method === 'POST' && path === '/volume') {
-      const body = (await readJsonBody(req)) as Record<string, unknown> | null
-      if (!body || typeof body.volume !== 'number') {
-        return jsonReply(res, 400, { error: 'Provide volume (0..1)' })
-      }
-      const volume = clampVolume(body.volume)
-      const sent = await sendRemoteCommand(ctx, { action: 'setVolume', volume })
-      return jsonReply(res, 200, { ok: sent, volume })
-    }
-
-    // POST /seek — body { positionSec } (absolute) or { offsetSec } (relative)
-    if (method === 'POST' && path === '/seek') {
-      const body = (await readJsonBody(req)) as Record<string, unknown> | null
-      let positionSec: number
-      if (body && typeof body.positionSec === 'number') {
-        positionSec = body.positionSec
-      } else if (body && typeof body.offsetSec === 'number') {
-        positionSec = (playbackState?.positionSec ?? 0) + body.offsetSec
-      } else {
-        return jsonReply(res, 400, { error: 'Provide positionSec or offsetSec' })
-      }
-      positionSec = Math.max(0, positionSec)
-      const sent = await sendRemoteCommand(ctx, { action: 'seek', positionSec })
-      return jsonReply(res, 200, { ok: sent, positionSec })
+      return jsonReply(res, 400, { error: 'Provide playlistId, trackId, query, or random' })
     }
 
     // GET /favorites
@@ -639,55 +666,113 @@ async function handleRequest(
       return jsonReply(res, 200, result)
     }
 
+    // 检索任务路由（两个前缀等价）：
+    //   GET    /tasks               任务列表（全部运行中 + 最近 100 条已结束）
+    //   GET    /tasks/:id/result    结果快照（原始检索结果）
+    //   POST   /tasks/:id/cancel    取消运行中任务
+    //   POST   /tasks/:id/retry     以原请求重新发起（新建任务记录）
+    //   DELETE /tasks/:id           删除已结束任务（不影响已缓存歌曲信息）
+    const songTaskMatch = path.match(/^(?:\/api\/music\/song-info|\/song-info)\/tasks(\/[^/]+(?:\/[^/]+)?)?$/)
+    if (songTaskMatch) {
+      const parts = (songTaskMatch[1] ?? '').split('/').filter(Boolean).map(decodeURIComponent)
+      const [taskId, action] = parts
+
+      if (method === 'GET' && parts.length === 0) {
+        return jsonReply(res, 200, { tasks: ctx.songInfo.listTasks() })
+      }
+      if (method === 'POST' && parts.length === 0) {
+        const body = (await readJsonBody(req)) as Record<string, unknown> | null
+        if (typeof body?.trackId !== 'string' || !body.trackId) {
+          return jsonReply(res, 400, { error: '请选择要检索的曲目。' })
+        }
+        if (!ctx.library.getTrackRow(body.trackId)) return jsonReply(res, 404, { error: '曲目不存在。' })
+        return jsonReply(res, 202, ctx.songInfo.lookupTrack(body.trackId))
+      }
+
+      if (method === 'GET' && parts.length === 2 && action === 'result') {
+        const result = ctx.songInfo.getTaskResult(taskId)
+        if (result) return jsonReply(res, 200, result)
+        const task = ctx.songInfo.getTask(taskId)
+        return jsonReply(res, 404, { error: task ? '该任务没有结果。' : '任务不存在。' })
+      }
+
+      if (method === 'POST' && parts.length === 2 && action === 'cancel') {
+        try {
+          await ctx.songInfo.cancelTask(taskId)
+          return jsonReply(res, 200, { ok: true, task: ctx.songInfo.getTask(taskId) })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Internal error'
+          return jsonReply(res, taskErrorStatus(message), { error: message })
+        }
+      }
+
+      if (method === 'POST' && parts.length === 2 && action === 'retry') {
+        try {
+          return jsonReply(res, 200, ctx.songInfo.retryTask(taskId))
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Internal error'
+          return jsonReply(res, taskErrorStatus(message), { error: message })
+        }
+      }
+
+      if (method === 'DELETE' && parts.length === 1) {
+        try {
+          ctx.songInfo.deleteTask(taskId)
+          return jsonReply(res, 200, { ok: true })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Internal error'
+          return jsonReply(res, taskErrorStatus(message), { error: message })
+        }
+      }
+    }
+
     return jsonReply(res, 404, { error: 'Not found' })
   } catch (error) {
+    if (res.destroyed) return
+    if (res.headersSent) {
+      res.destroy()
+      return
+    }
     const message = error instanceof Error ? error.message : 'Internal error'
-    jsonReply(res, 500, { error: message })
+    jsonReply(res, 500, { error: path.endsWith('/audio') ? '无法读取音频。' : message })
   }
 }
 
-export function startCliServer(
-  library: LibraryService,
-  getMainWindow: () => BrowserWindow | null,
-  resyncLibrary: (rootPath: string) => Promise<BaiduImportResult>,
-  songInfo: SongInfoService,
-  baidu?: BaiduService,
-  webdav?: WebDAVService
-): void {
-  const ctx: CliServerContext = { library, songInfo, getMainWindow, resyncLibrary, baidu, webdav }
-
+export function startCliServer(ctx: CliServerContext): () => void {
+  const portFile = join(ctx.endpointDir, 'cli-port')
+  const tokenFile = join(ctx.endpointDir, 'cli-token')
+  mkdirSync(ctx.endpointDir, { recursive: true, mode: 0o700 })
+  removeEndpointFile(portFile)
   authToken = randomBytes(16).toString('hex')
-  writeTokenFile(authToken)
+  writeEndpointFile(tokenFile, authToken)
 
-  server = createServer((req, res) => {
+  const server = createServer((req, res) => {
     void handleRequest(ctx, req, res)
   })
-
+  const stop = (): void => {
+    authToken = null
+    removeEndpointFile(portFile)
+    removeEndpointFile(tokenFile)
+    for (const res of eventSubscribers) res.end()
+    eventSubscribers.clear()
+    server.close()
+    server.closeAllConnections()
+  }
   server.listen(0, '127.0.0.1', () => {
-    const addr = server!.address()
+    const addr = server.address()
     if (addr && typeof addr === 'object') {
-      writePortFile(addr.port)
-      console.log(`[CLI] server listening on 127.0.0.1:${addr.port}`)
+      try {
+        writeEndpointFile(portFile, String(addr.port))
+        console.log(`[CLI] server listening on 127.0.0.1:${addr.port}`)
+      } catch (error) {
+        console.error('[CLI] endpoint file error:', error)
+        stop()
+      }
     }
   })
-
   server.on('error', error => {
     console.error('[CLI] server error:', error.message)
+    stop()
   })
-}
-
-export function stopCliServer(): void {
-  removePortFile()
-  removeTokenFile()
-  for (const res of eventSubscribers) res.end()
-  eventSubscribers.clear()
-  for (const pending of pendingCommands.values()) {
-    clearTimeout(pending.timer)
-    pending.resolve(false)
-  }
-  pendingCommands.clear()
-  if (server) {
-    server.close()
-    server = null
-  }
+  return stop
 }

@@ -1,11 +1,25 @@
-import { useEffect, useRef, useState } from 'react'
-import type { SongInfoMeta, SongInfoToolStatus, Track, TrackDetail as TrackDetailData } from '@shared/ipc'
+import { useEffect, useState } from 'react'
+import type { IPCApi, SongInfoMeta, SongInfoTask, Track, TrackDetail as TrackDetailData } from '@shared/ipc'
+import ActionNotice, { problemHint } from './ActionNotice'
+import AppDialog from './AppDialog'
+import MusicBrainzIdentify from './MusicBrainzIdentify'
+import SongInfoResult from './SongInfoResult'
 import { trackSourceLabel } from './sourceLabels'
+
+type TrackDetailApi = Pick<IPCApi, 'trackGetDetail' | 'songInfoGet' | 'songInfoLookup' |
+  'musicBrainzLookup' | 'trackApplyIdentification'> &
+  Partial<Pick<IPCApi, 'trackDownload'>>
 
 interface TrackDetailProps {
   track: Track
+  api?: TrackDetailApi
+  tasks: SongInfoTask[]
+  onOpenTasks(history?: boolean): void
+  onRefreshTasks(): void
   onBack(): void
   onPlay(): void
+  /** 识别结果写入后通知外层刷新曲库列表。 */
+  onLibraryChanged?(): void
 }
 
 function formatDuration(seconds: number | null): string {
@@ -31,123 +45,85 @@ function extensionOf(path: string): string {
 
 type CopyField = 'path' | 'remoteId'
 
-export default function TrackDetail({ track, onBack, onPlay }: TrackDetailProps) {
+export default function TrackDetail({ track, tasks, onOpenTasks, onRefreshTasks, onBack, onPlay, onLibraryChanged, api = window.api }: TrackDetailProps) {
   const [detail, setDetail] = useState<TrackDetailData | null>(null)
+  const [detailFailed, setDetailFailed] = useState(false)
+  const [detailRequest, setDetailRequest] = useState(0)
   const [copiedField, setCopiedField] = useState<CopyField | null>(null)
   const [songMeta, setSongMeta] = useState<SongInfoMeta | null>(null)
+  const [readingMeta, setReadingMeta] = useState(true)
+  const [metaFailed, setMetaFailed] = useState(false)
+  const [metaRequest, setMetaRequest] = useState(0)
   const [downloadBusy, setDownloadBusy] = useState(false)
-  const [downloadStatus, setDownloadStatus] = useState('')
-  const [lookupId, setLookupId] = useState<string | null>(null)
-  const [streamText, setStreamText] = useState('')
-  const [toolStatus, setToolStatus] = useState<SongInfoToolStatus | null>(null)
-  const [lookupError, setLookupError] = useState<string | null>(null)
-  const lookupIdRef = useRef<string | null>(null)
+  const [downloadStatus, setDownloadStatus] = useState<{ ok: boolean; message: string } | null>(null)
+  const [startingLookup, setStartingLookup] = useState(false)
+  const [lookupError, setLookupError] = useState(false)
+  const [dismissedTask, setDismissedTask] = useState<string | null>(null)
+  const [detailSection, setDetailSection] = useState<'info' | 'file'>('info')
+  const [showResult, setShowResult] = useState(false)
+
+  const currentTask = tasks.find(task => task.trackId === track.id && task.status === 'running')
+  const lastTask = tasks.find(task => task.trackId === track.id && task.status !== 'running')
+  const lastResultTask = tasks.find(task => task.trackId === track.id && (task.status === 'succeeded' || task.status === 'not_found'))?.id
+  // 检索可能顺带补全了标题/艺术家：任务进入终态后重读 detail，避免继续展示列表传来的旧 track。
+  const lastTaskKey = lastTask ? `${lastTask.id}:${lastTask.status}:${lastTask.finishedAt ?? 0}` : ''
 
   useEffect(() => {
-    let cancelled = false
-    setDetail(null)
-    setSongMeta(null)
-    setLookupId(null)
-    lookupIdRef.current = null
-    setStreamText('')
-    setToolStatus(null)
-    setLookupError(null)
-    window.api.trackGetDetail(track.id)
-      .then(found => {
-        if (!cancelled) setDetail(found)
-      })
-      .catch(() => undefined)
-    return () => { cancelled = true }
-  }, [track.id])
+    let active = true
+    void api.trackGetDetail(track.id).then(found => {
+      if (!active) return
+      setDetail(found)
+      setDetailFailed(!found)
+    }, () => { if (active) setDetailFailed(true) })
+    return () => { active = false }
+  }, [api, track.id, detailRequest, lastTaskKey])
 
-  // 详情（含 path）载入后查询已保存的歌曲信息
+  const path = detail?.path ?? null
   useEffect(() => {
-    if (!detail) return
-    let cancelled = false
-    window.api.songInfoGet(detail.path)
-      .then(meta => {
-        if (!cancelled) setSongMeta(meta)
-      })
-      .catch(() => undefined)
-    return () => { cancelled = true }
-  }, [detail])
+    if (!path) return
+    let active = true
+    setReadingMeta(true)
+    setMetaFailed(false)
+    void api.songInfoGet(path).then(meta => {
+      if (active) setSongMeta(meta)
+    }, () => { if (active) setMetaFailed(true) }).finally(() => { if (active) setReadingMeta(false) })
+    return () => { active = false }
+  }, [api, path, lastResultTask, metaRequest])
 
   const duration = track.durationSec ?? detail?.durationSec ?? null
-  const path = detail?.path ?? null
   const size = detail?.size ?? null
   const modifiedAt = detail?.modifiedAt ?? null
   const remoteId = detail?.remoteId ?? null
-
-  // 订阅歌曲信息检索事件流（增量文本 / 工具状态 / 完成 / 出错）
-  useEffect(() => {
-    const unsubscribe = window.api.onSongInfoEvent(event => {
-      if (!lookupIdRef.current || event.requestId !== lookupIdRef.current) return
-      if (event.type === 'delta') {
-        setStreamText(previous => previous + event.text)
-      } else if (event.type === 'tools') {
-        setToolStatus(event.status)
-      } else if (event.type === 'done') {
-        lookupIdRef.current = null
-        setLookupId(null)
-        setStreamText('')
-        setToolStatus(null)
-        setSongMeta(event.meta)
-      } else {
-        lookupIdRef.current = null
-        setLookupId(null)
-        setStreamText('')
-        setToolStatus(null)
-        setLookupError(event.message)
-      }
-    })
-    return unsubscribe
-  }, [])
+  // detail 比列表里的 track 更新（AI 可能刚补全），展示以 detail 为准。
+  const title = detail?.title || track.title
+  const artist = detail?.artist || track.artist
 
   async function downloadToLocal(): Promise<void> {
-    if (downloadBusy) return
+    if (downloadBusy || !api.trackDownload) return
     setDownloadBusy(true)
-    setDownloadStatus('')
+    setDownloadStatus(null)
     try {
-      const result = await window.api.trackDownload(track.id)
-      setDownloadStatus(`已下载到 ${result.path}`)
+      const result = await api.trackDownload(track.id)
+      setDownloadStatus({ ok: true, message: result.path })
     } catch (error) {
-      setDownloadStatus(`下载失败：${error instanceof Error ? error.message : String(error)}`)
+      setDownloadStatus({ ok: false, message: problemHint(error) })
     } finally {
       setDownloadBusy(false)
     }
   }
 
   async function startLookup(): Promise<void> {
-    if (lookupIdRef.current) return
-    setLookupError(null)
-    setStreamText('')
-    setToolStatus(null)
+    if (startingLookup || currentTask) return
+    setLookupError(false)
+    setStartingLookup(true)
     try {
-      const started = await window.api.songInfoLookup(track.id)
-      lookupIdRef.current = started.requestId
-      setLookupId(started.requestId)
-    } catch (error) {
-      setLookupError(error instanceof Error ? error.message : String(error))
+      await api.songInfoLookup(track.id)
+      onRefreshTasks()
+    } catch {
+      setLookupError(true)
+    } finally {
+      setStartingLookup(false)
     }
-  }
-
-  function renderLyrics(meta: SongInfoMeta) {
-    if (meta.lyricsBilingual.length > 0) {
-      return (
-        <div className="song-info-lyrics bilingual">
-          {meta.lyricsBilingual.map((line, index) => (
-            <p key={index} className="song-info-lyric-line">
-              <span className="original">{line.original}</span>
-              {line.translated && <span className="translated">{line.translated}</span>}
-            </p>
-          ))}
-        </div>
-      )
-    }
-    if (typeof meta.lyrics === 'string' && meta.lyrics) {
-      return <pre className="song-info-lyrics">{meta.lyrics}</pre>
-    }
-    return null
   }
 
   async function copyValue(value: string, field: CopyField): Promise<void> {
@@ -180,26 +156,39 @@ export default function TrackDetail({ track, onBack, onPlay }: TrackDetailProps)
       </div>
 
       <div className="detail-hero">
-        <div className="detail-cover" aria-hidden="true">♪</div>
+        {detail?.coverUrl
+          ? <img className="detail-cover" src={detail.coverUrl} alt="专辑封面" />
+          : <div className="detail-cover" aria-hidden="true">♪</div>}
         <div className="detail-info">
-          <h2>{track.title}</h2>
-          <p>{track.artist ?? trackSourceLabel(track.sourceId)}</p>
+          <p>{artist ?? trackSourceLabel(track.sourceId)}</p>
           <div className="detail-actions">
             <button className="primary-button" onClick={onPlay}>播放</button>
-            <button
-              type="button"
-              className="quiet-button"
-              onClick={() => void downloadToLocal()}
-              disabled={downloadBusy}
-            >
-              {downloadBusy ? '下载中…' : '下载'}
-            </button>
+            {api.trackDownload && (
+              <button
+                type="button"
+                className="quiet-button"
+                onClick={() => void downloadToLocal()}
+                disabled={downloadBusy}
+              >
+                {downloadBusy ? '下载中…' : '下载'}
+              </button>
+            )}
           </div>
-          {downloadStatus && <p className="detail-download-status">{downloadStatus}</p>}
         </div>
       </div>
 
-      <dl className="detail-meta">
+      {downloadStatus && (
+        <ActionNotice title={downloadStatus.ok ? '下载完成' : '无法下载音频'} message={downloadStatus.message}
+          tone={downloadStatus.ok ? 'success' : 'error'} onDismiss={() => setDownloadStatus(null)} />
+      )}
+      <div className="detail-sections" role="group" aria-label="曲目详情分类">
+        <button type="button" aria-pressed={detailSection === 'info'} onClick={() => setDetailSection('info')}>歌曲信息</button>
+        <button type="button" aria-pressed={detailSection === 'file'} onClick={() => setDetailSection('file')}>文件资料</button>
+      </div>
+
+      {detailSection === 'file' && (detailFailed ? (
+        <ActionNotice title="无法读取文件资料" action={{ label: '重试', run: () => { setDetailFailed(false); setDetailRequest(key => key + 1) } }} />
+      ) : <dl className="detail-meta">
         <div className="detail-meta-row">
           <dt>时长</dt>
           <dd>{formatDuration(duration)}</dd>
@@ -252,42 +241,59 @@ export default function TrackDetail({ track, onBack, onPlay }: TrackDetailProps)
             )}
           </dd>
         </div>
-      </dl>
+      </dl>)}
 
-      <section className="song-info">
-        <div className="song-info-header">
-          <h3>歌曲信息</h3>
-          <button
-            type="button"
-            className="quiet-button"
-            onClick={() => void startLookup()}
-            disabled={lookupId !== null}
-          >
-            {lookupId ? '检索中…' : songMeta?.found ? '重新检索' : 'AI 联网检索'}
-          </button>
-        </div>
-        {lookupError && <p className="song-info-error">{lookupError}</p>}
-        {lookupId ? (
-          <div className="song-info-streaming">
-            {toolStatus && toolStatus.toolCallCount > 0 && (
-              <p className="song-info-tools">
-                已调用工具 {toolStatus.toolCallCount} 次{toolStatus.currentTool ? ` · 正在使用 ${toolStatus.currentTool}` : ''}
-              </p>
-            )}
-            <pre className="song-info-raw">{streamText || '正在联网检索，首次响应可能需要十几秒…'}</pre>
+      {detailSection === 'info' && (
+        <section className="song-info" aria-label="歌曲介绍与歌词">
+          <MusicBrainzIdentify detail={detail} api={api} onApplied={updated => {
+            setDetail(updated)
+            setDetailRequest(key => key + 1)
+            onLibraryChanged?.()
+          }} />
+          <div className="song-info-header">
+            <div>
+              <h3>介绍与歌词</h3>
+              <p className="ai-field-note">使用大模型联网检索，可在后台运行。</p>
+            </div>
+            <button type="button" className={songMeta?.found ? 'quiet-button' : 'primary-button'}
+              onClick={() => void startLookup()} disabled={startingLookup || !!currentTask}>
+              {startingLookup ? '正在启动…' : currentTask ? '检索中…' : songMeta?.found ? '重新检索' : 'AI 联网检索'}
+            </button>
           </div>
-        ) : songMeta && !songMeta.found ? (
-          <p className="song-info-empty">上次检索未找到：{songMeta.reason || '无原因记录'}</p>
-        ) : songMeta ? (
-          <>
-            {songMeta.intro && <p className="song-info-intro">{songMeta.intro}</p>}
-            {renderLyrics(songMeta)}
-            <p className="song-info-footer">via {songMeta.model} · {new Date(songMeta.updatedAt).toLocaleString()}</p>
-          </>
-        ) : (
-          <p className="song-info-empty">暂无歌曲信息。点击「AI 联网检索」获取歌曲介绍与歌词。</p>
-        )}
-      </section>
+          {lookupError && (
+            <ActionNotice title="未能启动检索" message="检查曲目是否仍在库中，或稍后重试。"
+              onDismiss={() => setLookupError(false)} />
+          )}
+          {currentTask ? (
+            <div className="detail-ai-progress">
+              <span className="notice-spinner" aria-hidden="true" />
+              <div><strong>正在联网检索</strong><p className="ai-field-note">
+                {currentTask.toolCallCount ? `已调用检索工具 ${currentTask.toolCallCount} 次。` : '正在等待模型响应。'}可以离开此页。
+              </p></div>
+              <button type="button" className="quiet-button" onClick={() => onOpenTasks()}>查看任务</button>
+            </div>
+          ) : lastTask && ['failed', 'not_found', 'interrupted'].includes(lastTask.status) && lastTask.id !== dismissedTask ? (
+            <ActionNotice title={lastTask.status === 'not_found' ? '上次未找到歌曲信息' : '上次检索未完成'}
+              message={lastTask.status !== 'not_found' ? lastTask.message ?? undefined : undefined}
+              action={{ label: '查看历史', run: () => onOpenTasks(true) }} onDismiss={() => setDismissedTask(lastTask.id)} />
+          ) : null}
+          {songMeta?.found ? (
+            <div className="detail-ai-summary">
+              <div><strong>已有歌曲资料</strong><p className="ai-field-note">更新于 {new Date(songMeta.updatedAt).toLocaleString()}</p></div>
+              <button type="button" className="quiet-button" onClick={() => setShowResult(true)}>查看介绍与歌词</button>
+            </div>
+          ) : metaFailed ? (
+            <ActionNotice title="未能读取已保存的结果" action={{ label: '重试', run: () => setMetaRequest(value => value + 1) }} />
+          ) : (
+            <p className="song-info-empty">{readingMeta && !detailFailed ? '正在读取已保存的歌曲资料…' : '暂无已保存的歌曲资料。'}</p>
+          )}
+        </section>
+      )}
+      {showResult && songMeta && (
+        <AppDialog title={title} onClose={() => setShowResult(false)}>
+          <SongInfoResult meta={songMeta} />
+        </AppDialog>
+      )}
     </div>
   )
 }

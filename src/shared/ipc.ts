@@ -45,9 +45,17 @@ export const IPC_CHANNELS = {
   libraryImport: 'library:import',
   playbackPushState: 'playback:pushState',
   playbackAckCommand: 'playback:ackCommand',
+  playbackRemoteReady: 'playback:remoteReady',
   trackContextMenu: 'track:contextMenu',
   songInfoGet: 'songInfo:get',
   songInfoLookup: 'songInfo:lookup',
+  songInfoListTasks: 'songInfo:listTasks',
+  songInfoGetTaskResult: 'songInfo:getTaskResult',
+  songInfoCancelTask: 'songInfo:cancelTask',
+  songInfoRetryTask: 'songInfo:retryTask',
+  songInfoDeleteTask: 'songInfo:deleteTask',
+  musicBrainzLookup: 'musicBrainz:lookup',
+  trackApplyIdentification: 'track:applyIdentification',
   trackDownload: 'track:download',
   aiGetConfig: 'ai:getConfig',
 
@@ -59,7 +67,8 @@ export const IPC_CHANNELS = {
 export const PLAYBACK_REMOTE_COMMAND_CHANNEL = 'playback:remoteCommand'
 export const OPEN_SETTINGS_CHANNEL = 'app:openSettings'
 export const SYNC_PROGRESS_CHANNEL = 'library:syncProgress'
-export const SONG_INFO_EVENT_CHANNEL = 'songInfo:event'
+export const SONG_INFO_TASKS_CHANGED_CHANNEL = 'songInfo:tasksChanged'
+export const LIBRARY_CHANGED_CHANNEL = 'library:changed'
 export const UPDATE_STATUS_CHANNEL = 'update:status'
 
 export type RemoteCommand = (
@@ -93,6 +102,8 @@ export interface Track {
   durationSec: number | null
   sourceId: string
   playbackUrl: string
+  /** 是否已完成 MusicBrainz 识别；未查询该列的列表返回 undefined。 */
+  identified?: boolean
 }
 
 export interface TrackDetail extends Track {
@@ -101,6 +112,47 @@ export interface TrackDetail extends Track {
   modifiedAt: number
   md5: string | null
   remoteId: string | null
+  album: string | null
+  /** 专辑封面地址（Cover Art Archive）。 */
+  coverUrl: string | null
+  mbRecordingId: string | null
+  mbReleaseId: string | null
+  mbArtistId: string | null
+  mbScore: number | null
+  /** 识别完成时间（epoch ms）；null = 未识别。 */
+  identifiedAt: number | null
+}
+
+/** MusicBrainz 单曲候选（由主进程 musicbrainz.ts 生成）。 */
+export interface MusicBrainzCandidate {
+  id: string
+  title: string
+  artist: string | null
+  artistId: string | null
+  durationSec: number | null
+  firstReleaseDate: string | null
+  score: number
+  album: string | null
+  releaseId: string | null
+  coverUrl: string | null
+}
+
+export interface MusicBrainzLookupResult {
+  /** 本地文件时长（秒）；探测失败时为 null。 */
+  localDurationSec: number | null
+  candidates: MusicBrainzCandidate[]
+}
+
+/** 保存识别结果时写入曲目的字段。 */
+export interface TrackIdentification {
+  recordingId: string
+  releaseId: string | null
+  artistId: string | null
+  album: string | null
+  coverUrl: string | null
+  score: number | null
+  title: string | null
+  artist: string | null
 }
 
 export type RepeatMode = 'off' | 'all' | 'one'
@@ -291,17 +343,38 @@ export interface SongInfoToolCall {
   status: 'planning' | 'running' | 'done'
 }
 
+/** REST SSE `tools` 事件的负载结构（GUI 进度走任务摘要，不走增量事件）。 */
 export interface SongInfoToolStatus {
   toolCallCount: number
   currentTool: string
   toolCalls: SongInfoToolCall[]
 }
 
-export type SongInfoEvent =
-  | { type: 'delta'; requestId: string; text: string }
-  | { type: 'tools'; requestId: string; status: SongInfoToolStatus }
-  | { type: 'done'; requestId: string; meta: SongInfoMeta }
-  | { type: 'error'; requestId: string; message: string }
+/** 检索任务状态：running = 进行中；interrupted = 上一进程退出时仍在运行。 */
+export type SongInfoTaskStatus =
+  | 'running'
+  | 'succeeded'
+  | 'not_found'
+  | 'failed'
+  | 'canceled'
+  | 'interrupted'
+
+/** 歌曲检索任务摘要：列表只暴露摘要，结果快照经 songInfoGetTaskResult 懒加载。 */
+export interface SongInfoTask {
+  id: string
+  trackId: string | null
+  title: string
+  artist: string | null
+  model: string
+  status: SongInfoTaskStatus
+  /** epoch ms */
+  startedAt: number
+  /** epoch ms；运行中为 null */
+  finishedAt: number | null
+  toolCallCount: number
+  currentTool: string | null
+  message: string | null
+}
 
 export interface TrackDownloadResult {
   path: string
@@ -333,7 +406,8 @@ export interface IPCApi {
   queueLoad(): Promise<PlaybackQueueState | null>
   getSources(): Promise<LibrarySource[]>
   listTracks(sourceId: string): Promise<Track[]>
-  listTracksPage(sourceId: string, offset: number, limit: number, search?: string): Promise<TracksPage>
+  listTracksPage(sourceId: string, offset: number, limit: number, search?: string,
+    identified?: 'all' | 'identified' | 'unidentified'): Promise<TracksPage>
   trackGetDetail(id: string): Promise<TrackDetail | null>
   openLocalTracks(): Promise<Track[]>
   baiduGetStatus(): Promise<BaiduAuthStatus>
@@ -355,6 +429,7 @@ export interface IPCApi {
   webdavResyncDirectory(rootPath: string): Promise<BaiduImportResult>
   webdavListRoots(): Promise<LibraryRootInfo[]>
   onSyncProgress(listener: (progress: SyncProgress) => void): () => void
+  onLibraryChanged(listener: () => void): () => void
   playlistList(): Promise<PlaylistSummary[]>
   playlistCreate(name: string): Promise<PlaylistSummary>
   playlistRename(id: string, name: string): Promise<PlaylistSummary>
@@ -369,22 +444,45 @@ export interface IPCApi {
   updateCheck(): Promise<UpdateSnapshot>
   updateDownload(): Promise<UpdateSnapshot>
   updateInstall(): Promise<boolean>
+  /** 安装桌面 `corner` 命令行到用户目录，返回安装路径。 */
   cliInstall(): Promise<string>
   libraryExport(): Promise<string | null>
   libraryImport(): Promise<LibraryImportResult | null>
   pushPlaybackState(state: PlaybackState): Promise<void>
+  /** 确认已执行远程播放命令；主进程据此把 CLI 请求标记为成功（不代表真的出声）。 */
   ackRemoteCommand(commandId: string): Promise<void>
+  /**
+   * 渲染层已订阅 `playback:remoteCommand` 且启动队列水合完成，主进程可开始下发命令。
+   * 页面重载后会重新调用；主进程在导航/关闭时重置等待状态。
+   */
+  markRemotePlaybackReady(): Promise<void>
   trackContextMenu(request: TrackContextMenuRequest): Promise<TrackContextMenuAction | null>
   onOpenSettings(listener: () => void): () => void
   onUpdateStatus(listener: (snapshot: UpdateSnapshot) => void): () => void
   songInfoGet(identifier: string): Promise<SongInfoMeta | null>
   songInfoLookup(trackId: string): Promise<{ requestId: string }>
+  /** 全部运行中任务 + 最近 100 条已结束任务（按时间倒序）。 */
+  songInfoListTasks(): Promise<SongInfoTask[]>
+  /** 懒加载任务结果快照（原始检索结果）；无结果返回 null。 */
+  songInfoGetTaskResult(id: string): Promise<SongInfoMeta | null>
+  songInfoCancelTask(id: string): Promise<void>
+  /** 以原请求重新发起检索并新建任务记录；运行中不可重试；同曲目运行中任务去重。 */
+  songInfoRetryTask(id: string): Promise<{ requestId: string }>
+  /** 仅可删除已结束任务；不影响已缓存的歌曲信息。 */
+  songInfoDeleteTask(id: string): Promise<void>
+  /** 任务列表稳定变化时触发（进度事件可合并），返回取消订阅函数。 */
+  onSongInfoTasksChanged(listener: () => void): () => void
   trackDownload(trackId: string, dest?: string): Promise<TrackDownloadResult>
-  onSongInfoEvent(listener: (event: SongInfoEvent) => void): () => void
+  /** MusicBrainz 候选检索（只读，不写库）。 */
+  musicBrainzLookup(trackId: string): Promise<MusicBrainzLookupResult>
+  /** 保存识别结果：标题/艺术家/专辑/封面/MB id 写入曲目。 */
+  trackApplyIdentification(trackId: string, identification: TrackIdentification): Promise<TrackDetail>
   aiGetConfig(): Promise<AiConfig>
   aiSaveConfig(config: AiConfig): Promise<AiConfig>
-  aiFetchModels(): Promise<AiModelInfo[]>
+  /** piWebUrl 可选：临时覆盖配置的服务地址（设置页连通性校验用）。 */
+  aiFetchModels(piWebUrl?: string): Promise<AiModelInfo[]>
   aiTestConnection(): Promise<AiTestResult>
+  /** 订阅桌面 CLI 的播放命令（主进程 → 渲染进程）。返回取消订阅函数。 */
   onRemoteCommand(listener: (command: RemoteCommand) => void): () => void
 }
 

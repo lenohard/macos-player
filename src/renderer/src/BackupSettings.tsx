@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import ActionNotice, { problemHint } from './ActionNotice'
 
 type BusyKind = 'export' | 'import' | null
 
@@ -26,7 +27,7 @@ export default function BackupSettings() {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(problemHint(err))
     } finally {
       setBusy(null)
     }
@@ -49,8 +50,8 @@ export default function BackupSettings() {
             {busy === 'import' ? '正在导入…' : '导入备份…'}
           </button>
         </div>
-        {message && <p className="settings-hint">{message}</p>}
-        {error && <p className="settings-hint">出错：{error}</p>}
+        {message && <ActionNotice tone="success" title="备份操作完成" message={message} onDismiss={() => setMessage(null)} />}
+        {error && <ActionNotice title="备份操作失败" message={error} onDismiss={() => setError(null)} />}
       </section>
     </div>
   )

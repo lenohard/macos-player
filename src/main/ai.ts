@@ -1,15 +1,10 @@
-import { app, net } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import type { AiConfig, AiModelInfo, AiTestResult } from '../shared/ipc'
+import { DEFAULT_AI_MODEL, normalizePiWebUrl } from '../shared/ai-defaults'
+import { getDataDir } from './data-path'
 
 const REQUEST_TIMEOUT_MS = 15_000
-const DEFAULT_PI_WEB_URL = 'http://100.109.27.51:8964'
-const DEFAULT_MODEL = 'opencode-go:qwen3.8-max'
-
-function normalizeUrl(url: string): string {
-  return url.trim().replace(/\/+$/, '') || DEFAULT_PI_WEB_URL
-}
 
 function providerFromId(id: string): string | undefined {
   const slash = id.indexOf('/')
@@ -34,10 +29,10 @@ function parseModelItem(item: Record<string, unknown> & { id: string }): AiModel
  * pi-web agent 配置：地址 + 默认模型。
  * - 配置存 userData/ai-config.json
  * - 模型列表从 {piWebUrl}/api/models 获取（字段名 modelList）
- * - 健康检查调 {piWebUrl} GET（仅需可达，不依赖 API Key）
+ * - 连接测试也检查模型接口，避免首页可达却无法使用检索的误报
  */
 export class AiService {
-  private readonly configPath = join(app.getPath('userData'), 'ai-config.json')
+  private readonly configPath = join(getDataDir(), 'ai-config.json')
 
   getConfig(): AiConfig {
     let saved: Partial<AiConfig> = {}
@@ -49,57 +44,53 @@ export class AiService {
       }
     }
     return {
-      piWebUrl: normalizeUrl(saved.piWebUrl ?? ''),
-      defaultModel: saved.defaultModel?.trim() || DEFAULT_MODEL,
-      songInfoPrompt: (saved.songInfoPrompt ?? '').trim()
+      piWebUrl: typeof saved?.piWebUrl === 'string' ? saved.piWebUrl : normalizePiWebUrl(''),
+      defaultModel: typeof saved?.defaultModel === 'string' ? saved.defaultModel.trim() || DEFAULT_AI_MODEL : DEFAULT_AI_MODEL,
+      songInfoPrompt: typeof saved?.songInfoPrompt === 'string' ? saved.songInfoPrompt.trim() : ''
     }
   }
 
   saveConfig(config: AiConfig): AiConfig {
-    const piWebUrl = normalizeUrl(config.piWebUrl)
-    const defaultModel = config.defaultModel?.trim() || DEFAULT_MODEL
+    const piWebUrl = normalizePiWebUrl(config.piWebUrl)
+    const defaultModel = config.defaultModel?.trim() || DEFAULT_AI_MODEL
     const songInfoPrompt = (config.songInfoPrompt ?? '').trim()
     writeFileSync(this.configPath, JSON.stringify({ piWebUrl, defaultModel, songInfoPrompt }, null, 2), { mode: 0o600 })
     return this.getConfig()
   }
 
-  async fetchModels(): Promise<AiModelInfo[]> {
-    const config = this.getConfig()
+  async fetchModels(piWebUrl = this.getConfig().piWebUrl): Promise<AiModelInfo[]> {
+    const base = normalizePiWebUrl(piWebUrl)
+    const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     let response: Response
     try {
-      response = await net.fetch(`${config.piWebUrl}/api/models`, {
-        headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-      })
-    } catch (error) {
-      throw new Error(`网络请求失败：${error instanceof Error ? error.message : String(error)}`)
+      // Match song-info's Node transport; Chromium's system proxy can misroute a Tailnet address.
+      response = await fetch(`${base}/api/models`, { headers: { Accept: 'application/json' }, signal })
+    } catch {
+      throw new Error(signal.aborted ? 'PI_WEB_TIMEOUT' : 'PI_WEB_UNREACHABLE')
     }
 
     if (!response.ok) {
-      const body = await response.text()
-      throw new Error(`HTTP ${response.status}${body ? `：${body.slice(0, 300)}` : ''}`)
+      void response.body?.cancel().catch(() => {})
+      if (response.status === 401 || response.status === 403) throw new Error('PI_WEB_DENIED')
+      if (response.status === 404) throw new Error('PI_WEB_BAD_RESPONSE')
+      throw new Error('PI_WEB_SERVICE_ERROR')
     }
 
-    const json = (await response.json()) as { modelList?: Array<Record<string, unknown>> }
-    const items = (json.modelList ?? []).filter(item => typeof item.id === 'string') as Array<
-      Record<string, unknown> & { id: string }
-    >
-    if (items.length === 0) throw new Error('响应中没有模型列表（modelList[].id）。')
-    return items.sort((a, b) => a.id.localeCompare(b.id)).map(item => parseModelItem(item))
+    const json = await response.json().catch(() => null) as { modelList?: unknown[] } | null
+    if (signal.aborted) throw new Error('PI_WEB_TIMEOUT')
+    if (!Array.isArray(json?.modelList)) throw new Error('PI_WEB_BAD_RESPONSE')
+    const items = json.modelList.filter((item): item is Record<string, unknown> & { id: string } =>
+      item !== null && typeof item === 'object' && 'id' in item && typeof item.id === 'string' && item.id.length > 0
+    )
+    return items.sort((a, b) => a.id.localeCompare(b.id)).map(parseModelItem)
   }
 
   async testConnection(): Promise<AiTestResult> {
-    const config = this.getConfig()
     try {
-      const response = await net.fetch(config.piWebUrl, {
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-      })
-      if (!response.ok) {
-        return { ok: false, message: `HTTP ${response.status}` }
-      }
-      return { ok: true, message: `✓ pi-web 连接正常（${config.piWebUrl}）` }
-    } catch (error) {
-      return { ok: false, message: `pi-web 连接失败：${error instanceof Error ? error.message : String(error)}` }
+      const models = await this.fetchModels()
+      return { ok: true, message: `连接正常，可用模型 ${models.length} 个。` }
+    } catch {
+      return { ok: false, message: '无法连接 pi-web，请检查服务地址和网络。' }
     }
   }
 }

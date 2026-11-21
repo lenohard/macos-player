@@ -1,0 +1,138 @@
+/* Shared notifications and dialogs: overlays never push the active view down. */
+.action-notice {
+  --notice-color: var(--danger-text);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px 9px 12px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--notice-color) 6%, var(--surface-solid));
+  border: 1px solid color-mix(in srgb, var(--notice-color) 22%, var(--border));
+  border-radius: 9px;
+}
+.action-notice-success { --notice-color: var(--success-text); }
+.action-notice-text { flex: 1; min-width: 0; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.action-notice-text strong { color: var(--notice-color); font-weight: 650; }
+.action-notice-text p { margin: 2px 0 0; color: var(--muted); }
+.action-notice .quiet-button { flex: 0 0 auto; min-height: 28px; padding: 0 9px; }
+.notice-close {
+  display: grid;
+  flex: 0 0 27px;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 19px;
+  line-height: 1;
+}
+.notice-close:hover { color: var(--text); background: var(--accent-soft); }
+.notice-toast {
+  position: fixed;
+  z-index: 20;
+  right: 16px;
+  bottom: 94px;
+  width: min(340px, calc(100vw - 32px));
+  box-shadow: var(--shadow);
+  border-radius: 9px;
+}
+.cloud-action-notice { max-width: 980px; margin: 0 auto 8px; }
+
+.app-dialog {
+  --dialog-height: min(525px, calc(100dvh - 36px));
+  display: none;
+  width: min(660px, calc(100vw - 40px));
+  height: var(--dialog-height);
+  max-height: var(--dialog-height);
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+.app-dialog-compact { --dialog-height: min(218px, calc(100dvh - 36px)); width: min(425px, calc(100vw - 40px)); }
+.app-dialog[open] { display: flex; flex-direction: column; }
+.app-dialog::backdrop { background: rgba(12, 12, 18, .42); }
+.app-dialog-header, .app-dialog-footer {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+}
+.app-dialog-header { border-bottom: 1px solid var(--border); }
+.app-dialog-header h2 { margin: 0; font-size: 16px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-dialog-body { flex: 1; min-height: 0; padding: 14px 16px; overflow: auto; overscroll-behavior: contain; font-size: 13px; }
+.app-dialog-body > p:first-child { margin-top: 0; }
+.app-dialog-footer { justify-content: flex-end; border-top: 1px solid var(--border); }
+
+.app-text-input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 11px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--content-bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.ai-track-picker-field { margin-bottom: 12px; }
+.ai-track-picker-empty { padding: 28px 12px; color: var(--muted); text-align: center; }
+.ai-track-picker-list { margin: 10px 0; padding: 0; list-style: none; border-top: 1px solid var(--border); }
+.ai-track-picker-list li { display: flex; gap: 9px; align-items: center; padding: 8px 2px; border-bottom: 1px solid var(--border); }
+.ai-track-picker-list li div { flex: 1; min-width: 0; }
+.ai-track-picker-list li strong, .ai-track-picker-list li span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-track-picker-list li span { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.ai-track-picker-list li button { flex: 0 0 auto; }
+.ai-nav-count { color: var(--accent); font-weight: 650; white-space: nowrap; }
+
+.ai-settings-heading, .ai-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ai-settings-heading .panel-title { margin: 0; }
+.ai-settings-save-status { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+.ai-advanced > summary { color: var(--text); font-size: 13px; font-weight: 650; cursor: pointer; min-height: 22px; }
+.ai-advanced[open] > summary { margin-bottom: 8px; }
+.ai-advanced .ai-prompt-input { min-height: 105px; }
+.align-start { align-self: flex-start; }
+
+.detail-sections {
+  display: flex;
+  width: max-content;
+  gap: 2px;
+  margin: 0 0 12px;
+  padding: 3px;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.detail-sections button { min-height: 30px; padding: 0 13px; color: var(--muted); font-size: 12px; background: transparent; border-radius: 6px; cursor: pointer; }
+.detail-sections button[aria-pressed='true'] { color: var(--text); font-weight: 650; background: var(--surface-solid); }
+.detail-ai-summary, .detail-ai-progress { display: flex; align-items: center; gap: 10px; padding: 8px 10px; min-height: 58px; font-size: 12px; border-radius: 8px; }
+.detail-ai-summary { background: var(--content-bg); border: 1px solid var(--border); }
+.detail-ai-progress { background: var(--accent-soft); }
+.detail-ai-summary > div, .detail-ai-progress > div { flex: 1; min-width: 0; }
+.detail-ai-summary .quiet-button, .detail-ai-progress .quiet-button { flex: 0 0 auto; }
+.detail-ai-summary p, .detail-ai-progress p { margin: 3px 0 0; }
+.notice-spinner { width: 14px; height: 14px; flex: 0 0 14px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: notice-spin 900ms linear infinite; }
+@keyframes notice-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .notice-spinner { animation: none; } }
+
+.sync-result-link {
+  display: flex; align-items: center; gap: 8px; min-height: 38px; flex: 0 0 auto;
+  margin: 0 26px 8px; padding: 3px 5px 3px 10px; color: var(--muted);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: 11px;
+}
+.sync-result-link > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sync-result-link .quiet-button { flex: 0 0 auto; min-height: 27px; }
+.sync-banner { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-dialog .sync-result-panel { margin: 0; padding: 0; box-shadow: none; border: 0; background: transparent; }
+.app-dialog .sync-result-sections { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.app-dialog .sync-result-list { max-height: none; overflow: visible; }
+.settings-section > .action-notice { margin-top: 12px; }
