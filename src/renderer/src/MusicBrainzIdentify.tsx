@@ -7,6 +7,7 @@ import type {
 } from '@shared/ipc'
 import ActionNotice, { problemHint } from './ActionNotice'
 import AppDialog from './AppDialog'
+import CoverImage from './CoverImage'
 
 type IdentifyApi = Pick<IPCApi, 'musicBrainzLookup' | 'trackApplyIdentification'>
 
@@ -152,9 +153,8 @@ export default function MusicBrainzIdentify({ detail, api = window.api, onApplie
               <ol className="mb-identify-list">
                 {result.candidates.map(candidate => (
                   <li key={candidate.id}>
-                    {candidate.coverUrl
-                      ? <img className="mb-candidate-cover" src={candidate.coverUrl} alt="" loading="lazy" />
-                      : <span className="mb-candidate-cover mb-candidate-cover-empty" aria-hidden="true">♪</span>}
+                    <CoverImage className="mb-candidate-cover" fallbackClassName="mb-candidate-cover-empty"
+                      src={candidate.coverUrl} loading="lazy" />
                     <div className="mb-candidate-copy">
                       <strong>{candidate.title}</strong>
                       <span>{candidate.artist || '未知艺术家'}</span>

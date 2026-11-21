@@ -410,8 +410,8 @@ export class LibraryService {
    */
   applyIdentification(id: string, input: TrackIdentification): TrackDetail {
     const row = this.getTrackRow(id)
-    if (!row || row.source_id !== 'local') throw new Error('本地曲目不存在或已被删除。')
-    if (this.pendingLocalDeletes.has(row.path)) {
+    if (!row) throw new Error('曲目不存在或已被删除。')
+    if (row.source_id === 'local' && this.pendingLocalDeletes.has(row.path)) {
       throw new Error('该曲目正在移入废纸篓，不能同时保存识别结果。')
     }
     const recordingId = (input.recordingId ?? '').trim()
@@ -430,12 +430,12 @@ export class LibraryService {
       SET title = ?, artist = ?, album = ?, cover_url = ?,
           mb_recording_id = ?, mb_release_id = ?, mb_artist_id = ?, mb_score = ?,
           mb_identified_at = ?, updated_at = ?
-      WHERE id = ? AND source_id = 'local' AND is_deleted = 0
+      WHERE id = ? AND is_deleted = 0
     `).run(title, artist, album, coverUrl, recordingId, releaseId, artistId, score,
       Date.now(), Date.now(), id)
-    if (Number(result.changes) !== 1) throw new Error('本地曲目不存在或已被删除。')
+    if (Number(result.changes) !== 1) throw new Error('曲目不存在或已被删除。')
     const updated = this.getTrackDetail(id)
-    if (!updated) throw new Error('无法读取更新后的本地曲目。')
+    if (!updated) throw new Error('无法读取更新后的曲目。')
     return updated
   }
 
@@ -572,16 +572,17 @@ export class LibraryService {
     const title = basename(entry.name, extname(entry.name))
 
     const byRemote = this.db.prepare(`
-      SELECT id, path, title, size, modified_at, is_deleted
+      SELECT id, path, title, size, modified_at, is_deleted, mb_recording_id
       FROM tracks
       WHERE source_id = ? AND remote_id = ? LIMIT 1
     `).get(sourceId, remoteId) as
-      { id: string; path: string; title: string; size: number; modified_at: number; is_deleted: number } | undefined
+      { id: string; path: string; title: string; size: number; modified_at: number; is_deleted: number; mb_recording_id: string | null } | undefined
 
     if (byRemote) {
+      const nextTitle = byRemote.mb_recording_id ? byRemote.title : title
       const pathChanged = byRemote.path !== entry.path
       const changed = pathChanged ||
-        byRemote.title !== title ||
+        byRemote.title !== nextTitle ||
         byRemote.size !== entry.size ||
         byRemote.modified_at !== entry.modifiedAt
       this.db.prepare(`
@@ -589,7 +590,7 @@ export class LibraryService {
           path = ?, title = ?, size = ?, modified_at = ?,
           is_deleted = 0, last_seen_sync = ?, updated_at = ?
         WHERE id = ?
-      `).run(entry.path, title, entry.size, entry.modifiedAt, syncToken, now, byRemote.id)
+      `).run(entry.path, nextTitle, entry.size, entry.modifiedAt, syncToken, now, byRemote.id)
       if (byRemote.is_deleted === 1) {
         return { trackId: byRemote.id, status: 'added', previousPath: null }
       }
@@ -601,14 +602,15 @@ export class LibraryService {
     }
 
     const byPath = this.db.prepare(`
-      SELECT id, remote_id, title, size, modified_at, is_deleted
+      SELECT id, remote_id, title, size, modified_at, is_deleted, mb_recording_id
       FROM tracks WHERE source_id = ? AND path = ? LIMIT 1
     `).get(sourceId, entry.path) as
-      { id: string; remote_id: string | null; title: string; size: number; modified_at: number; is_deleted: number } | undefined
+      { id: string; remote_id: string | null; title: string; size: number; modified_at: number; is_deleted: number; mb_recording_id: string | null } | undefined
 
     if (byPath) {
+      const nextTitle = byPath.mb_recording_id ? byPath.title : title
       const changed = byPath.remote_id !== remoteId ||
-        byPath.title !== title ||
+        byPath.title !== nextTitle ||
         byPath.size !== entry.size ||
         byPath.modified_at !== entry.modifiedAt
       this.db.prepare(`
@@ -616,7 +618,7 @@ export class LibraryService {
           remote_id = ?, title = ?, size = ?, modified_at = ?,
           is_deleted = 0, last_seen_sync = ?, updated_at = ?
         WHERE id = ?
-      `).run(remoteId, title, entry.size, entry.modifiedAt, syncToken, now, byPath.id)
+      `).run(remoteId, nextTitle, entry.size, entry.modifiedAt, syncToken, now, byPath.id)
       if (byPath.is_deleted === 1) {
         return { trackId: byPath.id, status: 'added', previousPath: null }
       }

@@ -28,7 +28,7 @@ export async function serveWebAsset(pathname: string, req: IncomingMessage, res:
     'Content-Type': STATIC_TYPES[extname(asset)],
     'Content-Length': info.size,
     'Cache-Control': asset.startsWith('assets/') ? 'private, max-age=31536000, immutable' : 'no-cache',
-    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://coverartarchive.org https://archive.org https://*.archive.org; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff'
   })
   if (req.method === 'HEAD') res.end()

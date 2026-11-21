@@ -1,6 +1,8 @@
 import { execFile } from 'child_process'
 import { existsSync } from 'fs'
 import { get as httpsGet } from 'https'
+import type { TrackDetail } from '../shared/ipc'
+import { validateLocalTrackFile } from './local-track-file'
 
 // MusicBrainz 单曲候选识别核心（只查询、只返回候选，不写库；候选须由用户在 UI 确认后再入库）。
 // 直连 musicbrainz.org：本机代理对 MB 返回 503，必须走 node:https 直连（https 模块不读代理环境变量）。
@@ -82,6 +84,13 @@ export async function lookupMusicBrainz(
   }
   if (lastError && merged.size === 0) throw lastError
   return { localDurationSec, candidates: rankCandidates([...merged.values()], localDurationSec) }
+}
+
+export async function lookupDesktopTrack(track: Pick<TrackDetail, 'path' | 'sourceId' | 'title' | 'artist'>): Promise<MusicBrainzLookupResult> {
+  // Duration is only a ranking hint. Do not download cloud audio or make
+  // desktop imports depend on the Web service's dedicated music root.
+  const file = track.sourceId === 'local' ? await validateLocalTrackFile(track.path).catch(() => null) : null
+  return lookupMusicBrainz(file?.path ?? '', track.title, track.artist)
 }
 
 // ---------- 本地时长探测（ffprobe，execFile 不走 shell，限时） ----------

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { IPCApi, SongInfoMeta, SongInfoTask, Track, TrackDetail as TrackDetailData } from '@shared/ipc'
 import ActionNotice, { problemHint } from './ActionNotice'
+import CoverImage from './CoverImage'
 import AppDialog from './AppDialog'
 import MusicBrainzIdentify from './MusicBrainzIdentify'
 import SongInfoResult from './SongInfoResult'
@@ -156,9 +157,7 @@ export default function TrackDetail({ track, tasks, onOpenTasks, onRefreshTasks,
       </div>
 
       <div className="detail-hero">
-        {detail?.coverUrl
-          ? <img className="detail-cover" src={detail.coverUrl} alt="专辑封面" />
-          : <div className="detail-cover" aria-hidden="true">♪</div>}
+        <CoverImage className="detail-cover" src={detail?.coverUrl} alt="专辑封面" />
         <div className="detail-info">
           <p>{artist ?? trackSourceLabel(track.sourceId)}</p>
           <div className="detail-actions">

@@ -4,7 +4,7 @@ import { randomBytes, timingSafeEqual } from 'crypto'
 import { join } from 'path'
 import { rowToTrack, type LibraryService, type TrackEditInput } from './library'
 import { LocalTrackFileError, validateLocalTrackFile } from './local-track-file'
-import { lookupMusicBrainz } from './musicbrainz'
+import { lookupDesktopTrack, lookupMusicBrainz } from './musicbrainz'
 import type { BaiduImportResult, PlaybackState, RemoteCommand, Track, TrackIdentification } from '../shared/ipc'
 import type { SongInfoService } from './song-info'
 import { downloadTrack, type DownloadTrackDeps } from './download'
@@ -255,8 +255,9 @@ async function handleRequest(
     const identifyMatch = /^\/tracks\/([0-9a-f-]{36})\/identify$/i.exec(path)
     if (identifyMatch && method === 'GET') {
       const track = ctx.library.getTrackDetail(identifyMatch[1])
-      if (!track || track.sourceId !== 'local') return jsonReply(res, 404, { error: '曲目不存在。' })
+      if (!track || (!desktop && track.sourceId !== 'local')) return jsonReply(res, 404, { error: '曲目不存在。' })
       try {
+        if (desktop) return jsonReply(res, 200, await lookupDesktopTrack(track))
         const file = await validateLocalTrackFile(track.path)
         return jsonReply(res, 200, await lookupMusicBrainz(file.path, track.title, track.artist))
       } catch (error) {

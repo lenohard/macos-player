@@ -42,8 +42,7 @@ import { WebDAVService } from './webdav'
 import { syncWebDAVDirectory, resyncWebDAVDirectory } from './webdav-sync'
 import { SongInfoService } from './song-info'
 import { downloadTrack } from './download'
-import { lookupMusicBrainz } from './musicbrainz'
-import { validateLocalTrackFile } from './local-track-file'
+import { lookupDesktopTrack } from './musicbrainz'
 import { setPlaybackState, startCliServer } from './cli-server'
 import { DesktopPlaybackCommands, installDesktopCli } from './desktop-cli'
 
@@ -454,9 +453,8 @@ ipcMain.handle(IPC_CHANNELS.songInfoDeleteTask, (_event, id: string) => getSongI
 // MusicBrainz 识别：候选检索不写库，用户确认后由 trackApplyIdentification 写入。
 ipcMain.handle(IPC_CHANNELS.musicBrainzLookup, async (_event, trackId: string) => {
   const track = getLibrary().getTrackDetail(trackId)
-  if (!track || track.sourceId !== 'local') throw new Error('曲目不存在或不是本地曲目。')
-  const file = await validateLocalTrackFile(track.path)
-  return lookupMusicBrainz(file.path, track.title, track.artist)
+  if (!track) throw new Error('曲目不存在。')
+  return lookupDesktopTrack(track)
 })
 ipcMain.handle(IPC_CHANNELS.trackApplyIdentification, (_event, trackId: string, identification: TrackIdentification) =>
   getLibrary().applyIdentification(trackId, identification))

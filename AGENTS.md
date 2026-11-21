@@ -127,7 +127,7 @@ Transport and cloud library sync are desktop-only. `desktop-cli.ts` waits for th
 - Static assets: `src/renderer/public/`; use **relative** `./…` URLs in production (`file://`).
 - Branding: the desktop icon is hand-made — `src/renderer/public/corner-logo.png` is the source of truth and `npm run icon` re-derives `build/icon.icns` from it. The web service has its own logo: `build/corner-web.svg` → `npm run icon:web` rewrites `build/corner-web.icns` and `src/renderer/web-public/corner-logo.png`. Keep the desktop runtime name `corner` despite the bundle ID change to preserve the existing app data and credentials.
 - Large libraries (~10k tracks): use `listTracksPage` (UI page size 100), not loading full lists into React state.
-- MusicBrainz 识别（桌面与网页同一套 UI）：`src/renderer/src/MusicBrainzIdentify.tsx` 是唯一入口，桌面走 IPC `musicBrainzLookup` / `trackApplyIdentification`，网页走 REST `GET /tracks/:id/identify` + `PATCH /tracks/:id`（body 带 `identification`）。候选由 `src/main/musicbrainz.ts` 生成，带 `releaseId`（= 封面来源：coverartarchive.org/release/<id>/front-500）与 `artistId`；检索不写库，点「使用此结果」才写入 `tracks` 的 `album/cover_url/mb_recording_id/mb_release_id/mb_artist_id/mb_score/mb_identified_at`（schema v6）并改写标题/艺术家。「已识别」= `mb_recording_id IS NOT NULL`，列表筛选参数 `identified=all|identified|unidentified`。
+- MusicBrainz 识别（桌面与网页共用 `MusicBrainzIdentify.tsx`）：桌面 IPC 与 CLI 支持网盘和本地曲目，查曲名/歌手，不下载网盘音频；网页 REST `GET /tracks/:id/identify` + `PATCH /tracks/:id` 仍仅允许独立网页曲库里的本地曲目。可用的本地文件时长仅用于排序，不做音频指纹。确认后才写入曲库（标题、艺术家、专辑、远端封面 URL、MusicBrainz 录音/发行/艺术家编号、分数与时间），不改文件本身；网盘同步保留已确认的歌名。图片访问仅放行 Cover Art Archive 及其 Internet Archive 代理，缺图时显示占位。
 
 ## Build / native deps
 
